@@ -1,0 +1,8 @@
+{
+  "name": "sf",
+  "version": "0.1.0",
+  "description": "Software factory — run a feature idea→open PR through a left-shifted gated pipeline, or enter at any phase (plan/build/review/ci-green) and resume from saved state in .scratch/<slug>/.",
+  "author": {
+    "name": "Joey Dwonczyk"
+  }
+}
