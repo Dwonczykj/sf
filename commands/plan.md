@@ -1,10 +1,12 @@
-description = "Factory phases 0–2 only: frame, scope + lock the requirements contract, split."
-prompt = """Run the software-factory planning phases only (start-feature Phases 0–2), then stop.
+---
+description: "Factory phases 0–2 only: frame, scope + lock the requirements contract, split."
+---
+Run the software-factory planning phases only (start-feature Phases 0–2), then stop.
 
-Feature: {{args}} (or infer from the current branch / most-recent `.scratch/*/`). Create or keep `.scratch/<slug>/`.
+Feature: $ARGUMENTS (or infer from the current branch / most-recent `.scratch/*/`). Create or keep `.scratch/<slug>/`.
 
 1. Frame — one-line restatement, derive `<slug>`; if given a bare PRE-#### fetch the title via the Linear MCP rather than guessing. Write/update `progress.md` with all phases pending.
 2. Scope — run `gather-requirements` (read-only trace + resolve every scope decision WITH me; surface what we hadn't considered while it's still a one-line edit). Escalate genuinely two-way readings to `discussion-room` for options + a recommendation before deciding. Then `grill-me` the resulting list. Freeze the final numbered list to `requirements.md` and get my explicit sign-off — this is the acceptance contract every later gate tests against; do not proceed without a yes.
 3. Split — run `pr-split-audit` against `requirements.md`; copy the slice list + merge order into `split.md`; present it and get one go-ahead (or "one slice, no split").
 
-Stop after the split is approved. Mark phases done in `progress.md`. Building is `sf:build`."""
+Stop after the split is approved. Mark phases done in `progress.md`. Building is `sf:build`.
