@@ -38,6 +38,11 @@ export const meta = {
 const MAX_ROUNDS = (args && args.maxRounds) || 4
 const WIDTH_ANSWERED = !!(args && args.widthAnswered)
 const SLICES = (args && args.slices) || []
+// ponytail: every agent() below did model:undefined, silently inheriting whatever
+// the interactive session had selected in its model picker (Sonnet, Opus, whatever
+// was last clicked) instead of a run you can reason about. Pin a default, let the
+// caller override via args.model (sf:build-verify's --model flag).
+const MODEL = (args && args.model) || 'claude-opus-4-8'
 
 const VENDORS = [
   { id: 'codex', label: 'codex' },
@@ -134,7 +139,8 @@ function vendorCommand(vendor, cwd) {
     return `Call the MCP tool mcp__codex__codex with { cwd: "${cwd}", sandbox: "read-only", "approval-policy": "never", prompt: <REVIEW_PROMPT> }.`
   }
   if (vendor === 'gemini') {
-    return `Run in Bash (heredoc the prompt, do not interpolate): node ~/.claude/skills/gemini-agent/scripts/run-agent.mjs --model gemini-3.1-pro-high --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
+    // ponytail: Gemini routed through cursor-agent (antigravity/agy is unreliable). Drop-in replacement, same wrapper shape.
+    return `Run in Bash (heredoc the prompt, do not interpolate): node ~/.claude/skills/cursor-agent/scripts/run-agent.mjs --model gemini-3.1-pro --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
   }
   // cursor
   return `Run in Bash (heredoc the prompt, do not interpolate): node ~/.claude/skills/cursor-agent/scripts/run-agent.mjs --model claude-opus-5-high --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
@@ -199,6 +205,7 @@ async function runVendorReview({ vendor, cwd, reviewPrompt, schema, phase, label
     schema,
     phase,
     label,
+    model: MODEL,
     effort: 'low', // the driver only parses; the vendor does the thinking
   })
 }
@@ -248,7 +255,7 @@ async function buildRound(slice, round, priorFindings) {
       `Worktree: ${slice.worktree}. Plan: .scratch/${slice.slug}/requirements.md.`,
       `Output the test-requirements list (NEW/UPDATE/COVERED), each naming the unit, the input that breaks it, and the observable outcome. Read-only, write no files.`,
     ].join('\n'),
-    { schema: TEST_REQS_SCHEMA, phase: 'Build', label: `t1:${slice.slug}:r${round}` },
+    { schema: TEST_REQS_SCHEMA, phase: 'Build', label: `t1:${slice.slug}:r${round}`, model: MODEL },
   )
   const testReqs = (t1 && t1.entries) || []
   const newReqs = testReqs.filter((e) => e.kind === 'NEW')
@@ -272,7 +279,7 @@ async function buildRound(slice, round, priorFindings) {
         ]
           .filter(Boolean)
           .join('\n'),
-        { phase: 'Build', label: `build:${slice.slug}:r${round}`, agentType: 'tech-lead' },
+        { phase: 'Build', label: `build:${slice.slug}:r${round}`, agentType: 'tech-lead', model: MODEL },
       ),
     () =>
       agent(
@@ -281,7 +288,7 @@ async function buildRound(slice, round, priorFindings) {
           `Follow ~/.claude/skills/solve-in-worktrees/SKILL.md "Phase 3b" (T2). Write ONLY new test files, for the NEW entries below, against the interface the PLAN promised. Mirror the nearest existing test file. Never stub the planned module into existence or soften an assertion to make red go away. Commit locally, no push.`,
           `NEW test-requirements:\n${newReqs.map((e, i) => `${i + 1}. ${e.statement}`).join('\n') || '(none)'}`,
         ].join('\n'),
-        { phase: 'Build', label: `t2:${slice.slug}:r${round}`, agentType: 'general-purpose' },
+        { phase: 'Build', label: `t2:${slice.slug}:r${round}`, agentType: 'general-purpose', model: MODEL },
       ),
     () =>
       agent(
@@ -295,7 +302,7 @@ async function buildRound(slice, round, priorFindings) {
         ]
           .filter(Boolean)
           .join('\n'),
-        { phase: 'Build', label: `t3:${slice.slug}:r${round}`, agentType: 'general-purpose' },
+        { phase: 'Build', label: `t3:${slice.slug}:r${round}`, agentType: 'general-purpose', model: MODEL },
       ),
   ])
 
@@ -307,7 +314,7 @@ async function buildRound(slice, round, priorFindings) {
       `Codex test-agent T1, feed 2 (diff coverage) for slice "${slice.slug}". Worktree: ${slice.worktree}.`,
       `Re-run T1 over git -C ${slice.worktree} diff origin/${slice.base}...HEAD for behaviour the plan never named (a branch, an invented error path, a caller it had to touch). If any is worth a test, write/append it (new file only) and commit locally. Otherwise report none.`,
     ].join('\n'),
-    { phase: 'Build', label: `t1diff:${slice.slug}:r${round}` },
+    { phase: 'Build', label: `t1diff:${slice.slug}:r${round}`, model: MODEL },
   )
 }
 
@@ -413,6 +420,6 @@ if (!SLICES.length) {
   log('no slices in args.slices -- nothing to do')
   return { slices: [] }
 }
-log(`sf build/verify: ${SLICES.length} slice(s), maxRounds=${MAX_ROUNDS}, widthAnswered=${WIDTH_ANSWERED}`)
+log(`sf build/verify: ${SLICES.length} slice(s), maxRounds=${MAX_ROUNDS}, widthAnswered=${WIDTH_ANSWERED}, model=${MODEL}`)
 const results = await parallel(SLICES.map((s) => () => runSlice(s)))
 return { slices: results.filter(Boolean) }

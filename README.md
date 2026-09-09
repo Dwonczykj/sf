@@ -6,6 +6,7 @@ All commands share one state contract: `.scratch/<slug>/` holding `progress.md` 
 
 | Command | Does |
 |---|---|
+| `sf:install` | Check (and help fix) the external deps the cross-vendor review needs: Cursor CLI, Codex CLI, and the `codex` MCP registration. Run this once per machine before the rest. |
 | `sf:start-feature <idea\|PRE-####>` | Full pipeline, idea → open PR. Delegates to the `start-feature` skill. |
 | `sf:continue [slug]` | Read `progress.md`, resume from the first pending phase. |
 | `sf:plan [idea\|PRE-####]` | Phases 0–2 only: frame, scope + lock `requirements.md`, split. Stops at split approval. |
