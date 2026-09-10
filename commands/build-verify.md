@@ -13,9 +13,9 @@ Setup, then hand off to the script:
 1. Locate the feature: remaining slug arg ($ARGUMENTS after stripping `--model`) -> current branch -> most-recent `.scratch/*/progress.md` -> ask. Read `requirements.md` and `split.md`.
 2. For each slice in the wave, ensure a sibling worktree exists off `origin/staging` (per `solve-in-worktrees` Phase 1 / `create-branch`), `pnpm i`, and that the slice's requirements + solution are written into `.scratch/<slug>/requirements.md`. Do NOT build here — the script does.
 3. Call the Workflow tool with:
-   `scriptPath: "/Users/joey/.claude/local-plugins/sf/workflows/build-verify-slice.js"`
-   `args: { slices: [ { slug, worktree: "<abs path>", pkg: "<lint/typecheck filter, e.g. functions|app>", base: "staging" }, ... ], maxRounds: 4, model: "<slug from --model, if given, else omit>" }`
-   Leave `run_in_background` at its default; a task notification arrives on completion.
+   `scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/build-verify-slice.js"`
+   `args: { pluginRoot: "${CLAUDE_PLUGIN_ROOT}", slices: [ { slug, worktree: "<abs path>", pkg: "<lint/typecheck filter, e.g. functions|app>", base: "staging" }, ... ], maxRounds: 4, model: "<slug from --model, if given, else omit>" }`
+   Leave `run_in_background` at its default; a task notification arrives on completion. The script has no filesystem access, so it can't resolve its own plugin path — `pluginRoot` is how it finds the bundled `cursor-agent`/`solve-in-worktrees`/`pre-pr-gate` skills it references in agent prompts. Always pass it, including on the `widthAnswered: true` re-invoke below.
 
 Handle the return (`{ slices: [...] }`), per slice:
 - `halted: "width-questions"` -> ask each `widthQuestions` entry with `AskUserQuestion` (three options: pin it / leave it / it's a bug — see `solve-in-worktrees` Phase 2b finding 7). Write the answers into `.scratch/<slug>/requirements.md`, then re-invoke the Workflow with the SAME args (including `model`, if set) plus `widthAnswered: true`.

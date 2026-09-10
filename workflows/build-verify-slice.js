@@ -12,6 +12,10 @@ export const meta = {
 // ---------------------------------------------------------------------------
 // Invocation contract (args):
 //   {
+//     pluginRoot: "${CLAUDE_PLUGIN_ROOT}",  // the sf plugin's install dir; the
+//                                            // script has no filesystem access
+//                                            // so it can't resolve this itself,
+//                                            // the calling command must pass it
 //     slices: [
 //       { slug, worktree, pkg, base }   // one WAVE of independent slices only
 //     ],
@@ -34,6 +38,10 @@ export const meta = {
 // that review, so the prompts can't drift from the skills. This script owns
 // ordering, the vote, and the loop -- nothing else.
 // ---------------------------------------------------------------------------
+
+if (!args || !args.pluginRoot) {
+  throw new Error('args.pluginRoot is required (pass ${CLAUDE_PLUGIN_ROOT} from the calling command) -- the script has no filesystem access to find its own bundled skills otherwise.')
+}
 
 const MAX_ROUNDS = (args && args.maxRounds) || 4
 const WIDTH_ANSWERED = !!(args && args.widthAnswered)
@@ -140,10 +148,10 @@ function vendorCommand(vendor, cwd) {
   }
   if (vendor === 'gemini') {
     // ponytail: Gemini routed through cursor-agent (antigravity/agy is unreliable). Drop-in replacement, same wrapper shape.
-    return `Run in Bash (heredoc the prompt, do not interpolate): node ~/.claude/skills/cursor-agent/scripts/run-agent.mjs --model gemini-3.1-pro --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
+    return `Run in Bash (heredoc the prompt, do not interpolate): node ${args.pluginRoot}/skills/cursor-agent/scripts/run-agent.mjs --model gemini-3.1-pro --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
   }
   // cursor
-  return `Run in Bash (heredoc the prompt, do not interpolate): node ~/.claude/skills/cursor-agent/scripts/run-agent.mjs --model claude-opus-5-high --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
+  return `Run in Bash (heredoc the prompt, do not interpolate): node ${args.pluginRoot}/skills/cursor-agent/scripts/run-agent.mjs --model claude-opus-5-high --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
 }
 
 function driverPrompt({ vendor, cwd, reviewPrompt, schemaNote }) {
@@ -213,7 +221,7 @@ async function runVendorReview({ vendor, cwd, reviewPrompt, schema, phase, label
 // --- Phase 2b: plan review --------------------------------------------------
 async function planReview(slice) {
   const reviewPrompt = [
-    `Read the skill at ~/.claude/skills/solve-in-worktrees/SKILL.md, section "Phase 2b".`,
+    `Read the skill at ${args.pluginRoot}/skills/solve-in-worktrees/SKILL.md, section "Phase 2b".`,
     `Perform EXACTLY that plan review (its 7 numbered checks) against the real codebase in ${slice.worktree}.`,
     `The plan under review is the requirements + solution in .scratch/${slice.slug}/requirements.md and the slice's solution notes.`,
     `Write no files. End with one verdict line PLAN OK or PLAN CHANGES.`,
@@ -251,7 +259,7 @@ async function buildRound(slice, round, priorFindings) {
   // T1: test-requirement gathering from the PLAN (read-only). Feed 1.
   const t1 = await agent(
     [
-      `Read ~/.claude/skills/solve-in-worktrees/SKILL.md, "Phase 3b" (T1, feed 0 + feed 1).`,
+      `Read ${args.pluginRoot}/skills/solve-in-worktrees/SKILL.md, "Phase 3b" (T1, feed 0 + feed 1).`,
       `Worktree: ${slice.worktree}. Plan: .scratch/${slice.slug}/requirements.md.`,
       `Output the test-requirements list (NEW/UPDATE/COVERED), each naming the unit, the input that breaks it, and the observable outcome. Read-only, write no files.`,
     ].join('\n'),
@@ -272,7 +280,7 @@ async function buildRound(slice, round, priorFindings) {
         [
           `You are the BUILD agent for slice "${slice.slug}". Absolute worktree: ${slice.worktree}.`,
           `EVERY edit and git command targets that path (git -C ${slice.worktree} ...) and nothing outside it.`,
-          `Read the plan at .scratch/${slice.slug}/requirements.md and build to the planned interface. Follow ~/.claude/skills/solve-in-worktrees/SKILL.md "Phase 3" (repo standards, comments-stricter-than-default, checks to run, DO NOT touch test files, DO NOT push, commit locally).`,
+          `Read the plan at .scratch/${slice.slug}/requirements.md and build to the planned interface. Follow ${args.pluginRoot}/skills/solve-in-worktrees/SKILL.md "Phase 3" (repo standards, comments-stricter-than-default, checks to run, DO NOT touch test files, DO NOT push, commit locally).`,
           `Never run tsc --noEmit anywhere in this repo; verify types by reading the diff.`,
           `A planned test that disagrees with your code: the plan wins -- fix the code, unless the plan detail itself is wrong, then stop and flag it.`,
           findingsBlock && buildFindings.length ? findingsBlock : '',
@@ -285,7 +293,7 @@ async function buildRound(slice, round, priorFindings) {
       agent(
         [
           `You are Codex test-agent T2 (test create) for slice "${slice.slug}". Worktree: ${slice.worktree}.`,
-          `Follow ~/.claude/skills/solve-in-worktrees/SKILL.md "Phase 3b" (T2). Write ONLY new test files, for the NEW entries below, against the interface the PLAN promised. Mirror the nearest existing test file. Never stub the planned module into existence or soften an assertion to make red go away. Commit locally, no push.`,
+          `Follow ${args.pluginRoot}/skills/solve-in-worktrees/SKILL.md "Phase 3b" (T2). Write ONLY new test files, for the NEW entries below, against the interface the PLAN promised. Mirror the nearest existing test file. Never stub the planned module into existence or soften an assertion to make red go away. Commit locally, no push.`,
           `NEW test-requirements:\n${newReqs.map((e, i) => `${i + 1}. ${e.statement}`).join('\n') || '(none)'}`,
         ].join('\n'),
         { phase: 'Build', label: `t2:${slice.slug}:r${round}`, agentType: 'general-purpose', model: MODEL },
@@ -294,7 +302,7 @@ async function buildRound(slice, round, priorFindings) {
       agent(
         [
           `You are Codex test-agent T3 (test update) for slice "${slice.slug}". Worktree: ${slice.worktree}.`,
-          `Follow ~/.claude/skills/solve-in-worktrees/SKILL.md "Phase 3b" (T3). Touch ONLY existing test files, for the UPDATE entries below. A test that now fails is a real regression (report it) unless the contract deliberately changed. Never delete a failing test to go green. Commit locally, no push.`,
+          `Follow ${args.pluginRoot}/skills/solve-in-worktrees/SKILL.md "Phase 3b" (T3). Touch ONLY existing test files, for the UPDATE entries below. A test that now fails is a real regression (report it) unless the contract deliberately changed. Never delete a failing test to go green. Commit locally, no push.`,
           `UPDATE test-requirements:\n${updateReqs.map((e, i) => `${i + 1}. ${e.statement}`).join('\n') || '(none)'}`,
           testFindings.length
             ? `Pass C test findings to address:\n${testFindings.map((f, i) => `${i + 1}. ${f.fileLine || ''} ${f.text}`).join('\n')}`
@@ -323,15 +331,15 @@ async function verifyRound(slice, round) {
   const passes = [
     {
       pass: 'A',
-      ref: `~/.claude/skills/solve-in-worktrees/SKILL.md "Phase 4 -- Pass A" (solution-vs-requirements over git -C ${slice.worktree} diff origin/${slice.base}...HEAD, against .scratch/${slice.slug}/requirements.md only). Per requirement: met / not met / met-but-broken with file:line, plus correctness/edge-case/dead-code defects. Not design/DRY/concurrency/tests.`,
+      ref: `${args.pluginRoot}/skills/solve-in-worktrees/SKILL.md "Phase 4 -- Pass A" (solution-vs-requirements over git -C ${slice.worktree} diff origin/${slice.base}...HEAD, against .scratch/${slice.slug}/requirements.md only). Per requirement: met / not met / met-but-broken with file:line, plus correctness/edge-case/dead-code defects. Not design/DRY/concurrency/tests.`,
     },
     {
       pass: 'B',
-      ref: `~/.claude/skills/pre-pr-gate/SKILL.md "Pass B" (code-quality: reuse/DRY, concurrency, mechanical design; ignore business correctness). Rank P0/P1/P2; only P0 gates RELEASE.`,
+      ref: `${args.pluginRoot}/skills/pre-pr-gate/SKILL.md "Pass B" (code-quality: reuse/DRY, concurrency, mechanical design; ignore business correctness). Rank P0/P1/P2; only P0 gates RELEASE.`,
     },
     {
       pass: 'C',
-      ref: `~/.claude/skills/pre-pr-gate/SKILL.md "Pass C" (test-critique: every mock vs what the real function returns, cardinality absent/more-than-one/stale/mis-attributed, justify every first()/[0]/.find() over an external collection). Rank P0/P1/P2; only P0 gates RELEASE. Mark test-directed findings forTests:true.`,
+      ref: `${args.pluginRoot}/skills/pre-pr-gate/SKILL.md "Pass C" (test-critique: every mock vs what the real function returns, cardinality absent/more-than-one/stale/mis-attributed, justify every first()/[0]/.find() over an external collection). Rank P0/P1/P2; only P0 gates RELEASE. Mark test-directed findings forTests:true.`,
     },
   ]
 
