@@ -2,11 +2,50 @@
 
 The `start-feature` pipeline as a namespaced set of `sf:` commands, so you can run the whole factory or enter at any phase and resume from saved state.
 
+## How `start-feature` works
+
+Idea → open PR through left-shifted, gated phases. Hexagons are **human gates** (hard stops); the per-slice build↔verify loop and the CI loop are the two cycles. State is markdown in `.scratch/<slug>/`; gates are real tool calls (Codex verdict, lint, jest), not self-assessment.
+
+```mermaid
+flowchart TD
+    A(["Idea / PRE-####"]) --> B["Frame — slug + progress.md"]
+    B --> C["Scope — gather-requirements + grill-me"]
+    C --> D{{"🔒 requirements.md signed off"}}
+    D --> E["Split — pr-split-audit"]
+    E --> F{{"🔒 split.md approved"}}
+    F --> G{"Spec?"}
+    G -->|yes| H["Opus 4.8 High — grill → design.md → plan.md"]
+    H --> I{{"🔒 spec signed off"}}
+    G -->|no| J["Per slice, in dependency order"]
+    I --> J
+
+    subgraph SLICE ["Per slice — independent leaves in parallel"]
+        direction TB
+        K["Worktree off origin/staging"] --> L["Plan review — Codex + Gemini + Cursor"]
+        L --> M{{"🔒 PLAN OK (3 models)"}}
+        M --> N["Build agent ∥ 3 test agents (tests-first)"]
+        N --> O["Verify — 3 passes × 3 models"]
+        O -->|CHANGES REQUIRED| N
+        O -->|RELEASE| P(["Open PR"])
+        P --> Q["CI + bot-comments loop"]
+        Q -->|not green| Q
+        Q -->|green + threads resolved| R(["Slice done"])
+    end
+
+    J --> K
+    R --> S["Final report vs requirements.md"]
+
+    classDef gate fill:#fef3c7,stroke:#b45309,color:#7c2d12;
+    class D,F,I,M gate;
+```
+
+Worker provider (build + test agents) follows `/sf:model-provider`; the review panel stays cross-vendor. The deterministic version of the per-slice loop is `sf:build-verify`.
+
 All commands share one state contract: `.scratch/<slug>/` holding `progress.md` (phase checklist + gate outcomes), `requirements.md` (the locked acceptance contract), and `split.md` (the slice plan). Commands that don't take a slug locate the feature by: slug arg → current git branch → most-recently-modified `.scratch/*/progress.md` → ask.
 
 | Command | Does |
 |---|---|
-| `sf:install` | Check (and help fix) the external deps the cross-vendor review needs: Cursor CLI, Codex CLI, and the `codex` MCP registration. Run this once per machine before the rest. |
+| `sf:install` | Check (and help fix) the external deps the cross-vendor review needs: Cursor CLI, Codex CLI (the `codex` MCP is optional — `codex-agent` uses the CLI directly), then prompt for the `branchPrefix` config. Run this once per machine before the rest. |
 | `sf:reload [plugin\|plugin@marketplace]` | Sync the installed plugin cache from its local marketplace source (default: `sf` itself) via `claude plugin update`, then tell you to restart to pick it up. Run after editing a command in `commands/`. |
 | `sf:start-feature <idea\|PRE-####>` | Full pipeline, idea → open PR. Delegates to the `start-feature` skill. |
 | `sf:investigate <report>` | Start from a reported bug instead of a feature idea: grill, root-cause, problems + requirements, decide on a spec, then run the factory from Phase 2 onward. |

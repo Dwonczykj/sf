@@ -44,7 +44,20 @@ Restate the feature in one line and derive `<slug>`. If given a bare `PRE-1234`,
 
 Run **`pr-split-audit`** against `requirements.md`. It plans slices so the bulk auto-approves in Bugbot and only the feature core needs human domain review; it writes the plan to `~/.claude/plans/<slug>.md`. Copy the slice list + merge order into `.scratch/<slug>/split.md`. Present it and get a single go-ahead (or "one slice, no split"). Opening PRs is outward-facing — the go-ahead covers the whole run.
 
+## Phase 2.5 — Spec  🔒 human gate (optional)
+
+Once the plans are done and **always** before building anything substantial, ask the user plainly whether this feature needs a spec. If no, skip to Phase 3. If yes, spawn **one Opus 4.8 (High reasoning)** agent to author it — this phase is only that agent's job:
+
+1. The agent runs **`grill-me`** on the user over the approved plan (`requirements.md` + `split.md`) until there is **zero** ambiguity about the requirements the design will encode. The grilling result is the spec's sole input; it does not re-trace the codebase.
+2. It writes **`design.md` first, then `plan.md`**, into the repo spec tree, following `specs/README.md` (co-location, numbering assigned at promotion) and `specs/_templates/{design.md,plan.md}` exactly — the same shape, headings and frontmatter as the existing `specs/` examples.
+3. The spec must be **shorter and more concise than the examples**, exceptionally short, and carry **no vernacular** — plain words a senior leader reads without decoding. Cut everything the templates don't require.
+4. Human gate: sign-off on `design.md` before `plan.md` is written, and on `plan.md` before the phase closes. Record the spec path in `progress.md`.
+
+The Phase 3 per-slice plan (solve-in-worktrees) is unchanged; the spec is the aligned, durable design/plan record that feeds it, not a replacement for it.
+
 ## Phase 3 — Build + gate each slice, PRE-PR
+
+Worker provider: the build + test sub-agents follow `~/.claude/sf-model-provider` (set by `/sf:model-provider`) — `anthropic` (default, Agent tool + `claude-opus-4-8`), `codex`, or `cursor`. Switch it to spare Anthropic usage; the review panel stays cross-vendor. `solve-in-worktrees` Phase 3 reads it.
 
 Per slice, in dependency order (independent leaves in parallel):
 
@@ -97,6 +110,7 @@ Cover every turn including the ones that changed direction or corrected an earli
 | start of Phase 1 | clarifying questions answered | human |
 | after Phase 1 | contract signed off | human |
 | after Phase 2 | split approved | human |
+| after the split, before build | spec required? if yes, Opus 4.8 High agent writes design.md then plan.md, each signed off | human (optional) |
 | during plan review, before `PLAN OK` | width questions answered — which behaviour of the touched code the tests will freeze (pin / leave / it's a bug) | human |
 | after the plan, before the build | plan review `PLAN OK` from Codex, Gemini, **and** Cursor — releases the plan to the build agent *and* to T1 | tool (3 models) |
 | plan-derived test vs implementation | plan wins → build finding; wrong plan detail → your call | tool + human |

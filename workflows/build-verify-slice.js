@@ -52,6 +52,16 @@ const SLICES = (args && args.slices) || []
 // caller override via args.model (sf:build-verify's --model flag).
 const MODEL = (args && args.model) || 'claude-opus-4-8'
 
+// Which vendor the *worker* sub-agents (build + T1/T2/T3) run on. Mirrors the interactive
+// path's ~/.claude/sf-model-provider switch, but the script has no fs access, so the
+// caller (sf:build-verify) reads that file and passes the value in. 'anthropic' spawns
+// Claude agent()s directly (spends Claude Code usage); 'codex'/'cursor' route the same
+// worker prompt through the vendor CLI to spare it. The review panel is unaffected.
+const PROVIDER = (args && args.provider) || 'anthropic'
+if (!['anthropic', 'codex', 'cursor'].includes(PROVIDER)) {
+  throw new Error(`provider must be anthropic|codex|cursor (got '${PROVIDER}')`)
+}
+
 const VENDORS = [
   { id: 'codex', label: 'codex' },
   { id: 'gemini', label: 'gemini' },
@@ -218,6 +228,61 @@ async function runVendorReview({ vendor, cwd, reviewPrompt, schema, phase, label
   })
 }
 
+// --- worker routing (build + test agents) -----------------------------------
+// PROVIDER === 'anthropic' spawns the Claude agent() directly (unchanged). For
+// 'codex'/'cursor' the SAME worker prompt is run through the vendor CLI (workspace-write,
+// so file edits land) by a thin Claude driver that only shells out and, when a schema is
+// expected, parses the CLI's final message into it — same shape as the review drivers, so
+// the heavy authoring runs on the vendor's subscription, not Claude Code usage. The driver
+// commits after the CLI returns, so the verify diff is there regardless of whether the
+// vendor CLI's own permissions allow git writes (cursor-agent's allowlist does not).
+function workerCliCommand(cwd) {
+  if (PROVIDER === 'codex') {
+    return `node ${args.pluginRoot}/skills/codex-agent/scripts/run-agent.mjs --sandbox workspace-write --cwd ${cwd} --timeout 1800`
+  }
+  return `node ${args.pluginRoot}/skills/cursor-agent/scripts/run-agent.mjs --model claude-opus-5-high --cwd ${cwd} --timeout 1800`
+}
+
+function workerDriverPrompt({ workerPrompt, cwd, writes, schemaNote }) {
+  return [
+    `You are a thin driver for an external coding agent (provider: ${PROVIDER}). Do NOT do the work yourself.`,
+    `Run this in Bash, heredoc the WORKER_PROMPT verbatim (do not interpolate it), and let it run to completion — it works inside ${cwd}:`,
+    ``,
+    `${workerCliCommand(cwd)}  <<'EOF'`,
+    `<WORKER_PROMPT>`,
+    `EOF`,
+    ``,
+    writes
+      ? `After it returns, commit its work yourself so the verify diff sees it (the CLI's own git permissions may not): git -C ${cwd} add -A && git -C ${cwd} commit -m "wip: worker round" || true`
+      : `It writes nothing (read-only analysis); do not commit.`,
+    ``,
+    `WORKER_PROMPT:`,
+    workerPrompt,
+    ``,
+    schemaNote
+      ? `Capture the agent's full final message and parse it into the structured output. ${schemaNote}`
+      : `Report a one-line confirmation of what changed. No schema.`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+// writes=true for agents that edit files (build/T2/T3/T1-diff); false for read-only T1.
+function runWorker({ workerPrompt, cwd, writes, schema, phase, label, agentType }) {
+  if (PROVIDER === 'anthropic') {
+    return agent(workerPrompt, { schema, phase, label, model: MODEL, agentType })
+  }
+  const schemaNote =
+    schema === TEST_REQS_SCHEMA ? 'Return the test-requirements entries (NEW/UPDATE/COVERED).' : ''
+  return agent(workerDriverPrompt({ workerPrompt, cwd, writes, schemaNote }), {
+    schema,
+    phase,
+    label,
+    model: MODEL,
+    effort: 'low',
+  })
+}
+
 // --- Phase 2b: plan review --------------------------------------------------
 async function planReview(slice) {
   const reviewPrompt = [
@@ -257,14 +322,18 @@ async function buildRound(slice, round, priorFindings) {
     : ''
 
   // T1: test-requirement gathering from the PLAN (read-only). Feed 1.
-  const t1 = await agent(
-    [
+  const t1 = await runWorker({
+    workerPrompt: [
       `Read ${args.pluginRoot}/skills/solve-in-worktrees/SKILL.md, "Phase 3b" (T1, feed 0 + feed 1).`,
       `Worktree: ${slice.worktree}. Plan: .scratch/${slice.slug}/requirements.md.`,
       `Output the test-requirements list (NEW/UPDATE/COVERED), each naming the unit, the input that breaks it, and the observable outcome. Read-only, write no files.`,
     ].join('\n'),
-    { schema: TEST_REQS_SCHEMA, phase: 'Build', label: `t1:${slice.slug}:r${round}`, model: MODEL },
-  )
+    cwd: slice.worktree,
+    writes: false,
+    schema: TEST_REQS_SCHEMA,
+    phase: 'Build',
+    label: `t1:${slice.slug}:r${round}`,
+  })
   const testReqs = (t1 && t1.entries) || []
   const newReqs = testReqs.filter((e) => e.kind === 'NEW')
   const updateReqs = testReqs.filter((e) => e.kind === 'UPDATE')
@@ -276,8 +345,8 @@ async function buildRound(slice, round, priorFindings) {
   // files, T3->existing test files. Nobody writes another's files.
   await parallel([
     () =>
-      agent(
-        [
+      runWorker({
+        workerPrompt: [
           `You are the BUILD agent for slice "${slice.slug}". Absolute worktree: ${slice.worktree}.`,
           `EVERY edit and git command targets that path (git -C ${slice.worktree} ...) and nothing outside it.`,
           `Read the plan at .scratch/${slice.slug}/requirements.md and build to the planned interface. Follow ${args.pluginRoot}/skills/solve-in-worktrees/SKILL.md "Phase 3" (repo standards, comments-stricter-than-default, checks to run, DO NOT touch test files, DO NOT push, commit locally).`,
@@ -287,21 +356,29 @@ async function buildRound(slice, round, priorFindings) {
         ]
           .filter(Boolean)
           .join('\n'),
-        { phase: 'Build', label: `build:${slice.slug}:r${round}`, agentType: 'tech-lead', model: MODEL },
-      ),
+        cwd: slice.worktree,
+        writes: true,
+        phase: 'Build',
+        label: `build:${slice.slug}:r${round}`,
+        agentType: 'tech-lead',
+      }),
     () =>
-      agent(
-        [
-          `You are Codex test-agent T2 (test create) for slice "${slice.slug}". Worktree: ${slice.worktree}.`,
+      runWorker({
+        workerPrompt: [
+          `You are test-agent T2 (test create) for slice "${slice.slug}". Worktree: ${slice.worktree}.`,
           `Follow ${args.pluginRoot}/skills/solve-in-worktrees/SKILL.md "Phase 3b" (T2). Write ONLY new test files, for the NEW entries below, against the interface the PLAN promised. Mirror the nearest existing test file. Never stub the planned module into existence or soften an assertion to make red go away. Commit locally, no push.`,
           `NEW test-requirements:\n${newReqs.map((e, i) => `${i + 1}. ${e.statement}`).join('\n') || '(none)'}`,
         ].join('\n'),
-        { phase: 'Build', label: `t2:${slice.slug}:r${round}`, agentType: 'general-purpose', model: MODEL },
-      ),
+        cwd: slice.worktree,
+        writes: true,
+        phase: 'Build',
+        label: `t2:${slice.slug}:r${round}`,
+        agentType: 'general-purpose',
+      }),
     () =>
-      agent(
-        [
-          `You are Codex test-agent T3 (test update) for slice "${slice.slug}". Worktree: ${slice.worktree}.`,
+      runWorker({
+        workerPrompt: [
+          `You are test-agent T3 (test update) for slice "${slice.slug}". Worktree: ${slice.worktree}.`,
           `Follow ${args.pluginRoot}/skills/solve-in-worktrees/SKILL.md "Phase 3b" (T3). Touch ONLY existing test files, for the UPDATE entries below. A test that now fails is a real regression (report it) unless the contract deliberately changed. Never delete a failing test to go green. Commit locally, no push.`,
           `UPDATE test-requirements:\n${updateReqs.map((e, i) => `${i + 1}. ${e.statement}`).join('\n') || '(none)'}`,
           testFindings.length
@@ -310,20 +387,27 @@ async function buildRound(slice, round, priorFindings) {
         ]
           .filter(Boolean)
           .join('\n'),
-        { phase: 'Build', label: `t3:${slice.slug}:r${round}`, agentType: 'general-purpose', model: MODEL },
-      ),
+        cwd: slice.worktree,
+        writes: true,
+        phase: 'Build',
+        label: `t3:${slice.slug}:r${round}`,
+        agentType: 'general-purpose',
+      }),
   ])
 
   // T1 feed 2: re-run over the first diff for behaviour the plan never named.
   // ponytail: coverage feed only -- it appends, it does not gate. The plan feed
   // above is the oracle; this catches branches/error-paths the plan missed.
-  await agent(
-    [
-      `Codex test-agent T1, feed 2 (diff coverage) for slice "${slice.slug}". Worktree: ${slice.worktree}.`,
+  await runWorker({
+    workerPrompt: [
+      `Test-agent T1, feed 2 (diff coverage) for slice "${slice.slug}". Worktree: ${slice.worktree}.`,
       `Re-run T1 over git -C ${slice.worktree} diff origin/${slice.base}...HEAD for behaviour the plan never named (a branch, an invented error path, a caller it had to touch). If any is worth a test, write/append it (new file only) and commit locally. Otherwise report none.`,
     ].join('\n'),
-    { phase: 'Build', label: `t1diff:${slice.slug}:r${round}`, model: MODEL },
-  )
+    cwd: slice.worktree,
+    writes: true,
+    phase: 'Build',
+    label: `t1diff:${slice.slug}:r${round}`,
+  })
 }
 
 // --- Phase 4: verify (3 passes x 3 vendors = 9) -----------------------------
@@ -428,6 +512,6 @@ if (!SLICES.length) {
   log('no slices in args.slices -- nothing to do')
   return { slices: [] }
 }
-log(`sf build/verify: ${SLICES.length} slice(s), maxRounds=${MAX_ROUNDS}, widthAnswered=${WIDTH_ANSWERED}, model=${MODEL}`)
+log(`sf build/verify: ${SLICES.length} slice(s), maxRounds=${MAX_ROUNDS}, widthAnswered=${WIDTH_ANSWERED}, provider=${PROVIDER}, model=${MODEL}`)
 const results = await parallel(SLICES.map((s) => () => runSlice(s)))
 return { slices: results.filter(Boolean) }

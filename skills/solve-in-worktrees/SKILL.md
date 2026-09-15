@@ -155,6 +155,14 @@ is what the tests are specified from.
 One agent per worktree, all spawned in a single message so they run concurrently
 (`tech-lead` for TypeScript work in this repo, otherwise `general-purpose`).
 
+**Worker provider:** before spawning, read `~/.claude/sf-model-provider` (missing =
+`anthropic`; set by `/sf:model-provider`). `anthropic` → spawn via the `Agent` tool with
+`model: "claude-opus-4-8"`. `codex` / `cursor` → run the build agent (and the Phase 3b
+test agents) through the `codex-agent` / `cursor-agent` skill instead, `--sandbox
+workspace-write --cwd <worktree>`, so the file edits land in the worktree. This only
+moves the worker sub-agents to another vendor's subscription to spare Anthropic usage; the
+Phase 4 review panel stays cross-vendor regardless. See `/sf:model-provider` for the contract.
+
 Its prompt must carry:
 
 - The absolute worktree path, with the instruction that **every** file edit and git

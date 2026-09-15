@@ -5,7 +5,12 @@ Run the software-factory build phase for a slice (start-feature Phase 3, steps 1
 
 Feature: infer from the current branch / most-recent `.scratch/*/`, or the slug arg ($ARGUMENTS). Read `requirements.md` and `split.md`. Pick the slice: the arg names it, else the next unbuilt slice in dependency order (independent leaves may run in parallel).
 
-Model: the build agent and the 3 test agents (T1/T2/T3) below are spawned via the `Agent` tool, which otherwise inherits whatever model this chat session happens to have selected. Default them to `model: "claude-opus-4-8"` instead — pass it explicitly on every one of those `Agent` calls, don't leave it unset. `--model <slug>` in the args (strip before slug inference) overrides for this run, e.g. `sf:build my-slice --model claude-sonnet-5`. This does not affect the plan-review vendors below (Codex/Gemini/Cursor) — those are already pinned to their own external models regardless of chat model.
+Model: the build agent and the 3 test agents (T1/T2/T3) below are spawned via the `Agent` tool, which otherwise inherits whatever model this chat session happens to have selected. First read `~/.claude/sf-model-provider` (missing = `anthropic`; set by `/sf:model-provider`) and route those workers per its contract:
+- **`anthropic`** — spawn them via the `Agent` tool with `model: "claude-opus-4-8"`, passed explicitly on every call, don't leave it unset.
+- **`codex`** — run each worker through the `codex-agent` skill instead of the `Agent` tool: `node ${CLAUDE_PLUGIN_ROOT}/skills/codex-agent/scripts/run-agent.mjs --sandbox workspace-write --cwd <worktree>` (workspace-write so the build agent can edit; the test agents write test files the same way).
+- **`cursor`** — run each worker through the `cursor-agent` skill: `node ${CLAUDE_PLUGIN_ROOT}/skills/cursor-agent/scripts/run-agent.mjs --model claude-opus-5-high --cwd <worktree>`.
+
+`--model <slug>` in the args (strip before slug inference) overrides the model for this one run regardless of provider, e.g. `sf:build my-slice --model claude-sonnet-5`. This does not affect the plan-review vendors below (Codex/Gemini/Cursor) — those are already pinned to their own external models regardless of chat model or the worker provider.
 
 Follow `solve-in-worktrees`:
 - one sibling worktree off `origin/staging` (branch per `create-branch`), `pnpm i`, then write the slice's requirements + solution;
