@@ -102,10 +102,12 @@ Not yet honoured by `sf:build-verify` (the deterministic Workflow) — that path
 One line, from GitHub:
 
 ```bash
-claude plugin marketplace add Dwonczykj/claude-code-joey-d && claude plugin install sf@sf
+claude plugin marketplace add Dwonczykj/sf && claude plugin install sf@sf
 ```
 
-Inside Claude Code: `/plugin marketplace add Dwonczykj/claude-code-joey-d` then `/plugin install sf@sf`. For local dev against the working tree, swap the source for `~/.claude/local-plugins/sf`. Then run `/sf:install` once per machine.
+Inside Claude Code: `/plugin marketplace add Dwonczykj/sf` then `/plugin install sf@sf`. Then run `/sf:install` once per machine.
+
+This plugin is published to [`Dwonczykj/sf`](https://github.com/Dwonczykj/sf) from `local-plugins/sf/` in the config repo via `git subtree`. Edit here, then publish with `git subtree push --prefix=local-plugins/sf sf-dist main` (remote `sf-dist` → `Dwonczykj/sf`). For local dev against this working tree, point a marketplace at `~/.claude/local-plugins/sf`.
 
 ## Edit
 
