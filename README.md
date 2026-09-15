@@ -99,11 +99,13 @@ Not yet honoured by `sf:build-verify` (the deterministic Workflow) — that path
 
 ## Install
 
-```
-/plugin install sf@sf
+One line, from GitHub:
+
+```bash
+claude plugin marketplace add Dwonczykj/claude-code-joey-d && claude plugin install sf@sf
 ```
 
-If the marketplace isn't found, add it first: `/plugin marketplace add ~/.claude/local-plugins/sf`.
+Inside Claude Code: `/plugin marketplace add Dwonczykj/claude-code-joey-d` then `/plugin install sf@sf`. For local dev against the working tree, swap the source for `~/.claude/local-plugins/sf`. Then run `/sf:install` once per machine.
 
 ## Edit
 
