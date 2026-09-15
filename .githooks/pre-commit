@@ -1,0 +1,61 @@
+#!/bin/sh
+# sf plugin — auto-bump the patch version when plugin files are staged but the
+# version wasn't already changed in this commit. The Claude Code plugin cache is
+# keyed by version, so a change that ships without a bump silently never reloads
+# (`claude plugin update` copies nothing). This makes the bump automatic.
+#
+# It never blocks a commit: any problem just skips the bump and exits 0.
+#
+# Install:
+#   - standalone Dwonczykj/sf clone:  git config core.hooksPath .githooks
+#   - inside the config repo (plugin at local-plugins/sf), symlink it so the rest
+#     of the repo's hooks are untouched:
+#       ln -sf ../../local-plugins/sf/.githooks/pre-commit .git/hooks/pre-commit
+
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 0
+plugin_root=$(dirname -- "$hook_dir")            # .githooks sits at the plugin root
+manifest="$plugin_root/.claude-plugin/plugin.json"
+[ -f "$manifest" ] || exit 0
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+manifest_rel=${manifest#"$repo_root"/}
+rel=${plugin_root#"$repo_root"/}
+[ "$rel" = "$plugin_root" ] && rel="."           # plugin_root == repo_root
+
+# Nothing staged under the plugin? Not our concern.
+staged=$(git diff --cached --name-only -- "$rel" 2>/dev/null)
+[ -n "$staged" ] || exit 0
+
+extract_version() {
+  # first "version": "x.y.z" in the manifest
+  sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' | head -1
+}
+
+index_ver=$(git show ":$manifest_rel" 2>/dev/null | extract_version)
+head_ver=$(git show "HEAD:$manifest_rel" 2>/dev/null | extract_version)
+
+# No HEAD yet (initial commit): leave whatever version is there.
+[ -n "$head_ver" ] || exit 0
+# Version already changed in this commit (manual bump): nothing to do.
+[ "$index_ver" = "$head_ver" ] || exit 0
+
+# Bump patch on a clean x.y.z from the working tree.
+cur=$(extract_version < "$manifest")
+case "$cur" in
+  *.*.*) : ;;
+  *) exit 0 ;;
+esac
+major=${cur%%.*}; rest=${cur#*.}; minor=${rest%%.*}; patch=${rest#*.}
+case "$patch" in *[!0-9]*) exit 0 ;; esac
+next="$major.$minor.$((patch + 1))"
+
+tmp=$(mktemp) || exit 0
+# Rewrite only the version line (our own stable manifest format).
+if sed "s/\"version\"[[:space:]]*:[[:space:]]*\"$cur\"/\"version\": \"$next\"/" "$manifest" > "$tmp" && ! cmp -s "$tmp" "$manifest"; then
+  mv "$tmp" "$manifest"
+  git add -- "$manifest_rel"
+  echo "sf: auto-bumped plugin version $cur -> $next" >&2
+else
+  rm -f "$tmp"
+fi
+exit 0

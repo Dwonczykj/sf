@@ -112,3 +112,17 @@ This plugin is published to [`Dwonczykj/sf`](https://github.com/Dwonczykj/sf) fr
 ## Edit
 
 Edit the `.md` files in `commands/` directly, then reinstall (or restart) to pick up changes.
+
+### Auto version bump (dev hook)
+
+The plugin cache is keyed by `plugin.json`'s `version`, so a change shipped without a bump silently never reloads. `.githooks/pre-commit` fixes this: when a commit stages plugin files but doesn't already change the version, it bumps the patch and stages `plugin.json`. It never blocks a commit — any problem just skips the bump. Install it once per clone (git can't auto-enable checked-in hooks):
+
+```bash
+# standalone Dwonczykj/sf clone (plugin at repo root):
+git config core.hooksPath .githooks
+
+# inside the config repo (plugin at local-plugins/sf) — symlink so other hooks are untouched:
+ln -sf ../../local-plugins/sf/.githooks/pre-commit .git/hooks/pre-commit
+```
+
+Bump the minor/major by hand when a change warrants it; the hook only defaults the patch when you forget.
