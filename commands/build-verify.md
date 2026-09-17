@@ -13,7 +13,7 @@ Worker provider: the build + test agents (not the review panel) can run on anoth
 
 Setup, then hand off to the script:
 1. Locate the feature: remaining slug arg ($ARGUMENTS after stripping `--model`) -> current branch -> most-recent `.scratch/*/progress.md` -> ask. Read `requirements.md` and `split.md`.
-2. For each slice in the wave, ensure a sibling worktree exists off `origin/staging` (per `solve-in-worktrees` Phase 1 / `create-branch`), `pnpm i`, and that the slice's requirements + solution are written into `.scratch/<slug>/requirements.md`. Do NOT build here — the script does.
+2. For each slice in the wave, ensure a sibling worktree exists off `origin/staging` (per `solve-in-worktrees` Phase 1 / `create-branch`), `pnpm i`, and that the slice's requirements + solution are written into `.scratch/<slug>/requirements.md`. Then run `repo-instructions` (consume step) for the worktree's repo — if it has a supplements file, append every rule whose **When** this slice's diff plausibly triggers under a `## Repo build-checks (sf:repo-instructions)` heading in that `requirements.md`, so the build/verify/test agents (including non-Claude vendors) both do it and are checked on it. Do NOT build here — the script does.
 3. Call the Workflow tool with:
    `scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/build-verify-slice.js"`
    `args: { pluginRoot: "${CLAUDE_PLUGIN_ROOT}", slices: [ { slug, worktree: "<abs path>", pkg: "<lint/typecheck filter, e.g. functions|app>", base: "staging" }, ... ], maxRounds: 4, provider: "<anthropic|codex|cursor, resolved above>", model: "<slug from --model, if given, else omit>" }`

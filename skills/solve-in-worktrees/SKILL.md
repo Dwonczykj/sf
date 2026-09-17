@@ -169,8 +169,11 @@ Its prompt must carry:
   command targets that path (`git -C <path> …`) and nothing outside it.
 - The requirements list and the solution plan, unedited.
 - Repo standards: minimal diff, reuse existing helpers over new abstractions,
-  functional style, no thrown errors, `assertNever` on closed unions —
-  `coding-standards` / `backend-standards` / `frontend-standards`.
+  functional style, no thrown errors, `assertNever` on closed unions, prefer
+  `const` over `let` (a reassignment that can't be lifted into a `const` — e.g.
+  built up in a loop — is the signal to extract it into its own function that
+  returns the value) — `coding-standards` / `backend-standards` /
+  `frontend-standards`.
 - **Comments — stricter than the repo default.** A comment survives only if it
   explains *why the code must be this way* for a reason that cannot be put into the
   code by any renaming or restructuring **and** cannot go stale: an external
