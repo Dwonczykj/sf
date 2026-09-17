@@ -57,7 +57,7 @@ The Phase 3 per-slice plan (solve-in-worktrees) is unchanged; the spec is the al
 
 ## Phase 3 — Build + gate each slice, PRE-PR
 
-Worker provider: the build + test sub-agents follow `~/.claude/sf-model-provider` (set by `/sf:model-provider`) — `anthropic` (default, Agent tool + `claude-opus-4-8`), `codex`, or `cursor`. Switch it to spare Anthropic usage; the review panel stays cross-vendor. `solve-in-worktrees` Phase 3 reads it.
+Worker models + provider: the build + test sub-agents' models follow `~/.claude/sf-models.json` (set by `/sf:models`; per-run flags `--build-model`/`--test-model`/`--model`) — `build` defaults to `claude-opus-4-8`, `tests` to `claude-sonnet-5`. Which vendor they run on follows `~/.claude/sf-model-provider` (`/sf:model-provider`) — `anthropic`/`codex`/`cursor`. Switch models for cost/speed, provider to spare Anthropic usage; the review panel stays cross-vendor. `solve-in-worktrees` Phase 3 reads both.
 
 Per slice, in dependency order (independent leaves in parallel):
 

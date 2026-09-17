@@ -46,11 +46,27 @@ if (!args || !args.pluginRoot) {
 const MAX_ROUNDS = (args && args.maxRounds) || 4
 const WIDTH_ANSWERED = !!(args && args.widthAnswered)
 const SLICES = (args && args.slices) || []
-// ponytail: every agent() below did model:undefined, silently inheriting whatever
-// the interactive session had selected in its model picker (Sonnet, Opus, whatever
-// was last clicked) instead of a run you can reason about. Pin a default, let the
-// caller override via args.model (sf:build-verify's --model flag).
-const MODEL = (args && args.model) || 'claude-opus-4-8'
+// Per-role models. The build agent does the real work and defaults to Opus; the
+// plan-review and verify agents are thin drivers that only shell out to the real
+// vendors (Codex/Gemini/Cursor) and parse the result, so they default cheap — that's
+// ~12 agents a run that don't need Opus. Resolve each role from args.models.<role>,
+// falling back to a blanket args.model (sf:build-verify's --model), then the default.
+// The caller (sf:build-verify) fills args.models from ~/.claude/sf-models.json + flags.
+const DEFAULT_MODELS = {
+  planReview: 'claude-sonnet-5',
+  build: 'claude-opus-4-8',
+  tests: 'claude-sonnet-5',
+  verify: 'claude-sonnet-5',
+}
+const BLANKET_MODEL = args && args.model
+const pickModel = (role) =>
+  (args && args.models && args.models[role]) || BLANKET_MODEL || DEFAULT_MODELS[role]
+const MODELS = {
+  planReview: pickModel('planReview'),
+  build: pickModel('build'),
+  tests: pickModel('tests'),
+  verify: pickModel('verify'),
+}
 
 // Which vendor the *worker* sub-agents (build + T1/T2/T3) run on. Mirrors the interactive
 // path's ~/.claude/sf-model-provider switch, but the script has no fs access, so the
@@ -214,7 +230,7 @@ function quorumFindings(perVendorFindings) {
   return { quorum, single }
 }
 
-async function runVendorReview({ vendor, cwd, reviewPrompt, schema, phase, label }) {
+async function runVendorReview({ vendor, cwd, reviewPrompt, schema, phase, label, model }) {
   const schemaNote =
     schema === PLAN_REVIEW_SCHEMA
       ? 'Return verdict (PLAN OK|PLAN CHANGES), planFindings, and widthQuestions.'
@@ -223,8 +239,8 @@ async function runVendorReview({ vendor, cwd, reviewPrompt, schema, phase, label
     schema,
     phase,
     label,
-    model: MODEL,
-    effort: 'low', // the driver only parses; the vendor does the thinking
+    model, // MODELS.planReview / MODELS.verify — the driver only parses; the vendor does the thinking
+    effort: 'low',
   })
 }
 
@@ -268,9 +284,10 @@ function workerDriverPrompt({ workerPrompt, cwd, writes, schemaNote }) {
 }
 
 // writes=true for agents that edit files (build/T2/T3/T1-diff); false for read-only T1.
-function runWorker({ workerPrompt, cwd, writes, schema, phase, label, agentType }) {
+// model is the role's model (MODELS.build for the build agent, MODELS.tests for T1/T2/T3).
+function runWorker({ workerPrompt, cwd, writes, schema, phase, label, agentType, model }) {
   if (PROVIDER === 'anthropic') {
-    return agent(workerPrompt, { schema, phase, label, model: MODEL, agentType })
+    return agent(workerPrompt, { schema, phase, label, model, agentType })
   }
   const schemaNote =
     schema === TEST_REQS_SCHEMA ? 'Return the test-requirements entries (NEW/UPDATE/COVERED).' : ''
@@ -278,7 +295,7 @@ function runWorker({ workerPrompt, cwd, writes, schema, phase, label, agentType 
     schema,
     phase,
     label,
-    model: MODEL,
+    model,
     effort: 'low',
   })
 }
@@ -302,6 +319,7 @@ async function planReview(slice) {
         schema: PLAN_REVIEW_SCHEMA,
         phase: 'Plan review',
         label: `plan:${slice.slug}:${v.label}`,
+        model: MODELS.planReview,
       }),
     ),
   )
@@ -333,6 +351,7 @@ async function buildRound(slice, round, priorFindings) {
     schema: TEST_REQS_SCHEMA,
     phase: 'Build',
     label: `t1:${slice.slug}:r${round}`,
+    model: MODELS.tests,
   })
   const testReqs = (t1 && t1.entries) || []
   const newReqs = testReqs.filter((e) => e.kind === 'NEW')
@@ -361,6 +380,7 @@ async function buildRound(slice, round, priorFindings) {
         phase: 'Build',
         label: `build:${slice.slug}:r${round}`,
         agentType: 'tech-lead',
+        model: MODELS.build,
       }),
     () =>
       runWorker({
@@ -374,6 +394,7 @@ async function buildRound(slice, round, priorFindings) {
         phase: 'Build',
         label: `t2:${slice.slug}:r${round}`,
         agentType: 'general-purpose',
+        model: MODELS.tests,
       }),
     () =>
       runWorker({
@@ -392,6 +413,7 @@ async function buildRound(slice, round, priorFindings) {
         phase: 'Build',
         label: `t3:${slice.slug}:r${round}`,
         agentType: 'general-purpose',
+        model: MODELS.tests,
       }),
   ])
 
@@ -407,6 +429,7 @@ async function buildRound(slice, round, priorFindings) {
     writes: true,
     phase: 'Build',
     label: `t1diff:${slice.slug}:r${round}`,
+    model: MODELS.tests,
   })
 }
 
@@ -441,6 +464,7 @@ async function verifyRound(slice, round) {
           schema: VERIFY_SCHEMA,
           phase: 'Verify',
           label: `verify:${p.pass}:${slice.slug}:${v.label}:r${round}`,
+          model: MODELS.verify,
         }),
       ),
     ),
@@ -512,6 +536,9 @@ if (!SLICES.length) {
   log('no slices in args.slices -- nothing to do')
   return { slices: [] }
 }
-log(`sf build/verify: ${SLICES.length} slice(s), maxRounds=${MAX_ROUNDS}, widthAnswered=${WIDTH_ANSWERED}, provider=${PROVIDER}, model=${MODEL}`)
+log(
+  `sf build/verify: ${SLICES.length} slice(s), maxRounds=${MAX_ROUNDS}, widthAnswered=${WIDTH_ANSWERED}, provider=${PROVIDER}, ` +
+    `models={plan:${MODELS.planReview}, build:${MODELS.build}, tests:${MODELS.tests}, verify:${MODELS.verify}}`,
+)
 const results = await parallel(SLICES.map((s) => () => runSlice(s)))
 return { slices: results.filter(Boolean) }

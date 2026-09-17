@@ -22,3 +22,5 @@ Feature: $ARGUMENTS if given, else infer from this session's context.
    - Phase 2 split, optional Phase 2.5 spec, then Phase 3 build+verify per slice, through `create-pr`, exactly as `start-feature` defines. Honour every human gate; update `progress.md` at each.
 
 The point is to not throw away scoping the session already did, while keeping every start-feature gate intact. If nothing in the session is actually scoped yet, say so and suggest `sf:start-feature` instead.
+
+Per-role models follow `~/.claude/sf-models.json` (`/sf:models`) and the same per-run flags as `start-feature` (`--build-model`, `--test-model`, `--verify-model`, `--plan-model`, `--model`); worker vendor follows `/sf:model-provider`. Strip any such flag out of $ARGUMENTS before feature inference.
