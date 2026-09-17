@@ -43,7 +43,7 @@ if (!args || !args.pluginRoot) {
   throw new Error('args.pluginRoot is required (pass ${CLAUDE_PLUGIN_ROOT} from the calling command) -- the script has no filesystem access to find its own bundled skills otherwise.')
 }
 
-const MAX_ROUNDS = (args && args.maxRounds) || 4
+const MAX_ROUNDS = (args && args.maxRounds) || 2
 const WIDTH_ANSWERED = !!(args && args.widthAnswered)
 const SLICES = (args && args.slices) || []
 // Per-role models. The build agent does the real work and defaults to Opus; the
@@ -167,17 +167,26 @@ const TEST_REQS_SCHEMA = {
 // How a Claude driver agent invokes each external vendor. The driver is thin:
 // run the command, capture the vendor's verdict + findings, return the schema.
 // The reasoning is the vendor's; the driver only parses. Cross-vendor diversity
-// (three different model families, not three Claude agents) is the whole point.
+// (different model families, not three Claude agents) is the point of the panel.
+//
+// Cost: the gemini and cursor seats bill Cursor (usage-based overage); codex is on the
+// flat ChatGPT/Codex sub. So the seats default to Cursor's cheaper tiers — the gemini seat
+// to Flash, the cursor seat to gpt-5.3-codex-high (coding-tuned, far below opus-5). Override
+// per run via args.reviewModels.{gemini,cursor}. NOTE: with the cursor seat on a GPT model,
+// codex + cursor are both GPT-family until the Claude seat moves to the Anthropic plan
+// (planned follow-up) — set reviewModels.cursor to claude-sonnet-5-high to keep Claude in.
+const DEFAULT_REVIEW_MODELS = { gemini: 'gemini-3.8-flash-high', cursor: 'gpt-5.3-codex-high' }
+const REVIEW_MODELS = { ...DEFAULT_REVIEW_MODELS, ...((args && args.reviewModels) || {}) }
 function vendorCommand(vendor, cwd) {
   if (vendor === 'codex') {
     return `Call the MCP tool mcp__codex__codex with { cwd: "${cwd}", sandbox: "read-only", "approval-policy": "never", prompt: <REVIEW_PROMPT> }.`
   }
   if (vendor === 'gemini') {
     // ponytail: Gemini routed through cursor-agent (antigravity/agy is unreliable). Drop-in replacement, same wrapper shape.
-    return `Run in Bash (heredoc the prompt, do not interpolate): node ${args.pluginRoot}/skills/cursor-agent/scripts/run-agent.mjs --model gemini-3.1-pro --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
+    return `Run in Bash (heredoc the prompt, do not interpolate): node ${args.pluginRoot}/skills/cursor-agent/scripts/run-agent.mjs --model ${REVIEW_MODELS.gemini} --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
   }
   // cursor
-  return `Run in Bash (heredoc the prompt, do not interpolate): node ${args.pluginRoot}/skills/cursor-agent/scripts/run-agent.mjs --model claude-opus-5-high --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
+  return `Run in Bash (heredoc the prompt, do not interpolate): node ${args.pluginRoot}/skills/cursor-agent/scripts/run-agent.mjs --model ${REVIEW_MODELS.cursor} --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
 }
 
 function driverPrompt({ vendor, cwd, reviewPrompt, schemaNote }) {
@@ -433,8 +442,20 @@ async function buildRound(slice, round, priorFindings) {
   })
 }
 
-// --- Phase 4: verify (3 passes x 3 vendors = 9) -----------------------------
-async function verifyRound(slice, round) {
+// --- Phase 4: verify -------------------------------------------------------
+// Round 1 runs the full panel (3 passes x every vendor = 9 calls). Re-verify rounds
+// (round > 1) run Codex ONLY — it's on the flat sub, so re-checking a fix costs nothing
+// on Cursor — and the prompt targets the prior P0s ("confirm each is resolved"), so one
+// trusted reviewer confirming the specific fixes replaces the 9-call panel. That's most of
+// the Cursor spend, since the loop rounds are where it multiplies.
+async function verifyRound(slice, round, priorFindings = []) {
+  const vendors = round === 1 ? VENDORS : VENDORS.filter((v) => v.id === 'codex')
+  const solo = vendors.length === 1
+  const targeted = solo
+    ? `\nThis is a re-check: confirm each of these prior P0s is now resolved in the diff, and flag any regression. Prior P0s:\n${priorFindings
+        .map((f, i) => `${i + 1}. ${f.fileLine || ''} ${f.text}`)
+        .join('\n') || '(none — do a light full pass)'}`
+    : ''
   const passes = [
     {
       pass: 'A',
@@ -452,15 +473,18 @@ async function verifyRound(slice, round) {
 
   const results = await parallel(
     passes.flatMap((p) =>
-      VENDORS.map((v) => () =>
+      vendors.map((v) => () =>
         runVendorReview({
           vendor: v.id,
           cwd: slice.worktree,
           reviewPrompt: [
             `Read and perform EXACTLY this review, write no files, end with one verdict line RELEASE or CHANGES REQUIRED and a numbered findings list:`,
             p.ref,
+            targeted,
             `Reconciliation is not your job -- just report your own verdict and findings.`,
-          ].join('\n'),
+          ]
+            .filter(Boolean)
+            .join('\n'),
           schema: VERIFY_SCHEMA,
           phase: 'Verify',
           label: `verify:${p.pass}:${slice.slug}:${v.label}:r${round}`,
@@ -480,8 +504,14 @@ async function verifyRound(slice, round) {
   const needsHumanCheck = []
   for (const pass of ['A', 'B', 'C']) {
     const { quorum, single } = quorumFindings(byPass[pass])
-    blocking = blocking.concat(quorum.filter((f) => f.severity === 'P0'))
-    for (const f of single) needsHumanCheck.push({ ...f, pass })
+    if (solo) {
+      // One trusted reviewer re-checking specific fixes — no quorum to reach, so its own
+      // P0s block directly; lower severities on a re-check are noise, not surfaced.
+      blocking = blocking.concat(single.filter((f) => f.severity === 'P0'))
+    } else {
+      blocking = blocking.concat(quorum.filter((f) => f.severity === 'P0'))
+      for (const f of single) needsHumanCheck.push({ ...f, pass })
+    }
   }
   const released = blocking.length === 0
   return { released, blocking, needsHumanCheck }
@@ -519,7 +549,7 @@ async function runSlice(slice) {
       return { slug: slice.slug, released: false, halted: 'budget', roundsUsed: round - 1, needsHumanCheck: lastNeedsHuman }
     }
     await buildRound(slice, round, priorFindings)
-    const verify = await verifyRound(slice, round)
+    const verify = await verifyRound(slice, round, priorFindings)
     lastNeedsHuman = verify.needsHumanCheck
     if (verify.released) {
       log(`slice ${slice.slug}: RELEASE after ${round} round(s)`)
@@ -538,7 +568,8 @@ if (!SLICES.length) {
 }
 log(
   `sf build/verify: ${SLICES.length} slice(s), maxRounds=${MAX_ROUNDS}, widthAnswered=${WIDTH_ANSWERED}, provider=${PROVIDER}, ` +
-    `models={plan:${MODELS.planReview}, build:${MODELS.build}, tests:${MODELS.tests}, verify:${MODELS.verify}}`,
+    `models={plan:${MODELS.planReview}, build:${MODELS.build}, tests:${MODELS.tests}, verify:${MODELS.verify}}, ` +
+    `reviewSeats={gemini:${REVIEW_MODELS.gemini}, cursor:${REVIEW_MODELS.cursor}} (round>1 = codex-only re-check)`,
 )
 const results = await parallel(SLICES.map((s) => () => runSlice(s)))
 return { slices: results.filter(Boolean) }

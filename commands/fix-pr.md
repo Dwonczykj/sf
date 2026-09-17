@@ -17,7 +17,7 @@ Target PR: the arg ($ARGUMENTS), else the PR for the current branch (`gh pr view
 
    Codex — `mcp__codex__codex { cwd: "<worktree>", sandbox: "read-only", approval-policy: "never", prompt: "<review prompt>" }` (keep the `threadId` for `codex-reply` on later rounds).
 
-   Cursor — `echo "<the same review prompt, verbatim>" | node ${CLAUDE_PLUGIN_ROOT}/skills/cursor-agent/scripts/run-agent.mjs --model claude-opus-5-high --cwd <worktree> --timeout 900`
+   Cursor — `echo "<the same review prompt, verbatim>" | node ${CLAUDE_PLUGIN_ROOT}/skills/cursor-agent/scripts/run-agent.mjs --model gpt-5.3-codex-high --cwd <worktree> --timeout 900` (cheap Cursor-billed tier; bump to `claude-sonnet-5-high` for a high-stakes fix).
 
    The prompt asks each model to find the correctness bugs, unhandled cases, and reuse/simplification issues Cursor Bugbot / Codex-connector would flag, and to end with a verdict line. Append, verbatim (Cursor isn't sandboxed): *review only — do not edit, create, or delete any file; do not run build/test/typecheck/lint commands or execute code to test a hypothesis; if a shell command is rejected, don't retry it, just note that and continue with what's already visible; output findings and a verdict line.* On later rounds re-run Cursor fresh against the updated diff; continue Codex on `codex-reply`.
 

@@ -86,12 +86,12 @@ mcp__codex__codex { cwd: "<worktree path>", sandbox: "read-only",
 
 ```bash
 echo "<the same plan-review prompt, verbatim>" | node ${CLAUDE_PLUGIN_ROOT}/skills/cursor-agent/scripts/run-agent.mjs \
-  --model gemini-3.1-pro --cwd <worktree path> --timeout 900
+  --model gemini-3.8-flash-high --cwd <worktree path> --timeout 900
 ```
 
 ```bash
 echo "<the same plan-review prompt, verbatim>" | node ${CLAUDE_PLUGIN_ROOT}/skills/cursor-agent/scripts/run-agent.mjs \
-  --model claude-opus-5-high --cwd <worktree path> --timeout 900
+  --model gpt-5.3-codex-high --cwd <worktree path> --timeout 900
 ```
 
 The plan-review prompt asks, against the real codebase and nothing else:
@@ -296,12 +296,12 @@ mcp__codex__codex  { cwd: "<worktree path>", sandbox: "read-only",
 
 ```bash
 echo "<the same pass prompt, verbatim>" | node ${CLAUDE_PLUGIN_ROOT}/skills/cursor-agent/scripts/run-agent.mjs \
-  --model gemini-3.1-pro --cwd <worktree path> --timeout 900
+  --model gemini-3.8-flash-high --cwd <worktree path> --timeout 900
 ```
 
 ```bash
 echo "<the same pass prompt, verbatim>" | node ${CLAUDE_PLUGIN_ROOT}/skills/cursor-agent/scripts/run-agent.mjs \
-  --model claude-opus-5-high --cwd <worktree path> --timeout 900
+  --model gpt-5.3-codex-high --cwd <worktree path> --timeout 900
 ```
 
 Reconciliation (2+/3-raised → act, exactly-one-raised → check it yourself,
@@ -345,10 +345,13 @@ plan → plan-review (3 models) → PLAN OK ─┬→ build agent ────�
 Send findings back to the *same* build agent with `SendMessage` (its context is intact
 and cheaper than a fresh spawn), one finding per line, each with the verifier's
 `file:line` and which pass raised it. Test findings go to T2/T3, not to the build
-agent. Then re-verify each pass with its own `codex-reply` plus fresh Gemini and Cursor
-runs.
+agent. Then re-verify **Codex-only** by default (it's on the flat sub, so re-checking costs
+nothing on Cursor): `codex-reply` on each pass, targeting the prior P0s ("confirm each is
+resolved, flag regressions"). Only re-run the Gemini + Cursor seats when a fix was large or
+cross-cutting — one trusted reviewer confirming the specific fixes replaces the full panel
+each round, which is where the Cursor spend multiplies.
 
-Cap at 4 build↔verify rounds per worktree. If it hasn't released by then, stop that
+Cap at 2 build↔verify rounds per worktree (round 1 full panel, round 2 the Codex-only re-check). If it hasn't released by then, stop that
 worktree and report what's contested — a loop that won't converge on Pass A is usually
 a requirement that's wrong, not code that's wrong; unconverged Pass C P1/P2s usually
 mean the reviewer is over-fitting, not the code — report those as left-deliberately,

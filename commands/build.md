@@ -16,7 +16,7 @@ This does not affect the plan-review vendors (Codex/Gemini/Cursor) — those are
 
 Follow `solve-in-worktrees`:
 - one sibling worktree off `origin/staging` (branch per `create-branch`), `pnpm i`, then write the slice's requirements + solution;
-- the 3-model plan review (Codex + Gemini `gemini-3.1-pro` (via cursor-agent) + Cursor `claude-opus-5-high`) BEFORE building — ambiguity findings come back to me; the approved plan releases to the build agent AND the test agents at the same moment;
+- the 3-model plan review (Codex + Gemini `gemini-3.8-flash-high` (via cursor-agent) + Cursor `gpt-5.3-codex-high`) BEFORE building — ambiguity findings come back to me; the approved plan releases to the build agent AND the test agents at the same moment;
 - build agent + 3 concurrent Codex test agents (tests exist before the code; the plan wins over a disagreeing plan-derived test unless the plan detail was wrong, which comes back to me);
 - all sub-agents commit locally — they can't push.
 

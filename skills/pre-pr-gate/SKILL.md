@@ -45,18 +45,18 @@ Run all of these; collect findings before fixing.
                        approval-policy: "never", prompt: "<see pass below>" }
    ```
 
-   Gemini side — via `cursor-agent`, pinned to `gemini-3.1-pro` (antigravity/`agy` is unreliable, so Gemini is routed through the Cursor CLI instead — same wrapper shape):
+   Gemini side — via `cursor-agent`, pinned to `gemini-3.8-flash-high` (antigravity/`agy` is unreliable, so Gemini is routed through the Cursor CLI instead — same wrapper shape). Both cursor-agent seats bill Cursor, so they run cheap tiers by default:
 
    ```bash
    echo "<the same pass prompt, verbatim>" | node ${CLAUDE_PLUGIN_ROOT}/skills/cursor-agent/scripts/run-agent.mjs \
-     --model gemini-3.1-pro --cwd <worktree path> --timeout 900
+     --model gemini-3.8-flash-high --cwd <worktree path> --timeout 900
    ```
 
-   Cursor side — `cursor-agent`, pinned to `claude-opus-5-high`:
+   Cursor side — `cursor-agent`, pinned to `gpt-5.3-codex-high` (coding-tuned, far below opus-5 on Cursor's usage pricing; bump to `claude-opus-5-high` or `claude-sonnet-5-high` for a high-stakes gate, and to keep a Claude family seat in the panel):
 
    ```bash
    echo "<the same pass prompt, verbatim>" | node ${CLAUDE_PLUGIN_ROOT}/skills/cursor-agent/scripts/run-agent.mjs \
-     --model claude-opus-5-high --cwd <worktree path> --timeout 900
+     --model gpt-5.3-codex-high --cwd <worktree path> --timeout 900
    ```
 
    Neither `agy` (Gemini) nor `agent` (Cursor) run sandboxed read-only, so the pass prompt must end with: *review only — do not edit, create, or delete any file; do not run build/test/typecheck/lint commands or execute code to test a hypothesis; if a shell command is rejected, don't retry it, just note that and continue with what's already visible; output findings and a verdict line.* Neither has thread resume: on later rounds re-run both fresh against the current diff, while Codex continues on `codex-reply`.
@@ -104,8 +104,8 @@ checks → verify (3 passes × 3 models = 9 concurrent) → reconcile → (any P
   is the smaller diff is how scope creep gets deferred into the next PR instead of decided.
   Everything else goes straight to the fixer.
 - Send findings back to the **same** build agent via `SendMessage` if one is running (its context is intact and cheaper than a fresh spawn); otherwise apply the fixes inline. One finding per line, each with its `file:line` and which pass raised it.
-- Re-run the code gates and re-verify: `codex-reply` on each Codex pass's own thread, and fresh `cursor-agent` runs per pass (both the `gemini-3.1-pro` and `claude-opus-5-high` pins) against the updated diff.
-- **Cap at 4 rounds.** If it hasn't released by then, stop and report what's contested — a loop that won't converge on Pass A is usually a requirement that's wrong, not code that's wrong; a loop that won't converge on Pass C's P1/P2s usually means the reviewer is over-fitting, not that the code is — cap those the same way and report them as left-deliberately, not as a blocker.
+- Re-run the code gates and re-verify. To spare Cursor spend, the re-verify round is **Codex-only** by default: `codex-reply` on each Codex pass's own thread, targeting the prior P0s ("confirm each is resolved, flag regressions"). One trusted reviewer confirming the specific fixes replaces re-running the two cursor-agent seats each round — only re-run the full `gemini`/`cursor` panel when a fix was large or cross-cutting.
+- **Cap at 2 rounds** by default (round 1 full panel, round 2 the Codex-only re-check). If it hasn't released, stop and report what's contested — a loop that won't converge on Pass A is usually a requirement that's wrong, not code that's wrong; a loop that won't converge on Pass C's P1/P2s usually means the reviewer is over-fitting, not that the code is — report those as left-deliberately, not as a blocker.
 
 ## On RELEASE
 

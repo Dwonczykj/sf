@@ -14,7 +14,11 @@ Persisted to `~/.claude/sf-models.json`. Absent file = the defaults below.
 | `tests` | T1/T2/T3 + T1-diff test agents | `claude-sonnet-5` |
 | `verify` | Phase 4 verify drivers (parse vendor findings) | `claude-sonnet-5` |
 
-Model slugs are **Claude** slugs (`claude-opus-4-8`, `claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5`) — these are the Agent-tool models. Which *vendor* the build/test workers run on (Anthropic vs codex/cursor) is the separate `/sf:model-provider` switch; even under codex/cursor the thin drivers here are still Claude and use these models.
+Model slugs for these four are **Claude** slugs (`claude-opus-4-8`, `claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5`) — these are the Agent-tool models. Which *vendor* the build/test workers run on (Anthropic vs codex/cursor) is the separate `/sf:model-provider` switch; even under codex/cursor the thin drivers here are still Claude and use these models.
+
+### Review seats (Cursor-billed)
+
+Two more keys tune the cross-vendor review panel's Cursor-billed seats (Cursor CLI slugs, not Claude): `reviewGemini` (default `gemini-3.8-flash-high`) and `reviewCursor` (default `gpt-5.3-codex-high`). The third seat, Codex, is on the flat ChatGPT sub and isn't tuned here. These bill Cursor overage, so they default to cheap tiers; set `reviewCursor claude-sonnet-5-high` to keep a Claude family seat in the panel. `sf:build-verify` reads these (and per-run `--gemini-review-model`/`--cursor-review-model`) and passes them as `reviewModels`.
 
 ## What to do
 
@@ -22,7 +26,7 @@ Argument: `$ARGUMENTS`.
 
 - **empty, `status`, or `show`** — read `~/.claude/sf-models.json` (missing = defaults), merge over the defaults, and print the four resolved roles in a short block. Don't write.
 - **`reset`** — delete `~/.claude/sf-models.json` (back to defaults). Confirm.
-- **one or more `role model` (or `role=model`) pairs** — set those roles and leave the rest. Accept aliases: `plan`→`planReview`, `test`/`tests`→`tests`, `build`, `verify`. Reject an unknown role (list the four) and an obviously non-Claude slug (say models must be Claude slugs). Merge into the file (create it if absent), then read back and print the four resolved roles.
+- **one or more `role model` (or `role=model`) pairs** — set those roles and leave the rest. Accept the four Claude roles (aliases `plan`→`planReview`, `test`/`tests`→`tests`, `build`, `verify`) and the two review seats (`reviewGemini`/`review-gemini`, `reviewCursor`/`review-cursor`). Reject an unknown role (list the six). For the four Claude roles reject an obviously non-Claude slug; the two review seats take Cursor CLI slugs, so don't. Merge into the file (create it if absent), then read back and print the resolved values.
 
 Write the JSON with the four keys it knows about, preserving any already set; e.g. `{"planReview":"claude-sonnet-5","build":"claude-opus-4-8","tests":"claude-sonnet-5","verify":"claude-haiku-4-5"}`.
 
