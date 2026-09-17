@@ -13,5 +13,6 @@ Feature: $ARGUMENTS (or infer from the current branch / most-recent `.scratch/*/
    - It then writes `design.md`, and after that `plan.md`, into the repo spec tree, following `specs/README.md` (placement, numbering-at-promotion) and `specs/_templates/{design.md,plan.md}` exactly — same shape and headings as the existing `specs/` examples.
    - The spec must be **shorter and more concise than the examples**, exceptionally short, and use **no vernacular** — plain words that senior leadership can read. Cut anything the templates don't require.
    - Get my sign-off on `design.md` before it writes `plan.md`, and on `plan.md` before finishing.
+   - The spec files ride the **first code PR in the stack**, not a PR of their own: leave them in the repo spec tree for now; the build phase commits them onto the first slice in merge order. Don't add a spec PR to `split.md`.
 
 Stop after the split (and, if requested, the spec) is approved. Mark phases done in `progress.md`. Building is `sf:build`.
