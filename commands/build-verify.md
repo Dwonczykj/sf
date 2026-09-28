@@ -27,6 +27,7 @@ Handle the return (`{ slices: [...] }`), per slice:
 - `halted: "plan-ambiguity"` -> resolve `planChangesForUser` with the user (convene `discussion-room` if two readings build different products), edit the plan, re-invoke.
 - `halted: "max-rounds"` -> report `contested` findings as not-converged (usually a wrong requirement on Pass A, or an over-fitting reviewer on Pass C P1/P2). Don't push.
 - `halted: "budget"` -> report and ask whether to continue with more budget.
-- `released: true` -> hand THIS slice to `sf:review` Stage 2 (push + open PR per `create-pr`, then loop CI + bots to green). Also surface any `needsHumanCheck` (single-vendor findings the script did not auto-act on) for a quick eyeball.
+- `halted: "build-failed"` / `"empty-diff"` -> the build agent errored or committed nothing. Report it, check the worktree, and don't push.
+- `released: true` -> hand THIS slice to `sf:review` Stage 2 (push + open PR per `create-pr`, then loop CI + bots to green). Also surface any `needsHumanCheck` (single-vendor P1/P2 findings; any P0 blocks) for a quick eyeball.
 
 Update `progress.md` with the per-slice outcome. The script never pushes; push + PR + CI stay here.

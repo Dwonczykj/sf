@@ -144,6 +144,21 @@ const VERIFY_SCHEMA = {
   },
 }
 
+const BUILD_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['summary', 'diffFiles'],
+  properties: {
+    summary: { type: 'string' },
+    diffFiles: { type: 'integer' }, // files in origin/<base>...HEAD after the build commit; 0 = nothing built
+  },
+}
+
+// Test agents stage files the repo's pre-commit typecheck hook won't let them commit alone,
+// so reviewers diff the working tree against the merge-base, not origin/<base>...HEAD.
+const reviewDiff = (slice) =>
+  `git -C ${slice.worktree} diff $(git -C ${slice.worktree} merge-base origin/${slice.base} HEAD)`
+
 const TEST_REQS_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -205,11 +220,9 @@ function driverPrompt({ vendor, cwd, reviewPrompt, schemaNote }) {
 }
 
 // --- reconciliation (canonical in pre-pr-gate) ------------------------------
-// A finding is ACTIONED when >=2 of 3 vendors raise it. A finding raised by
-// exactly one vendor is NOT auto-acted and NOT dropped: it goes to
-// needsHumanCheck. A pass RELEASEs only when no vendor still returns a blocking
-// verdict on a quorum finding. Dedupe is by normalised text -- coarse on
-// purpose; over-merging two findings only ever makes the gate stricter.
+// Quorum (>=2 of 3 vendors) only matters below P0: any P0 blocks on its own, and a
+// single-vendor P1/P2 goes to needsHumanCheck, not auto-acted, not dropped. Dedupe is
+// by normalised text -- coarse on purpose; over-merging only makes the gate stricter.
 function normalise(s) {
   return String(s || '')
     .toLowerCase()
@@ -294,12 +307,12 @@ function workerDriverPrompt({ workerPrompt, cwd, writes, schemaNote }) {
 
 // writes=true for agents that edit files (build/T2/T3/T1-diff); false for read-only T1.
 // model is the role's model (MODELS.build for the build agent, MODELS.tests for T1/T2/T3).
-function runWorker({ workerPrompt, cwd, writes, schema, phase, label, agentType, model }) {
+function runWorker({ workerPrompt, cwd, writes, schema, phase, label, agentType, model, schemaNote }) {
   if (PROVIDER === 'anthropic') {
     return agent(workerPrompt, { schema, phase, label, model, agentType })
   }
-  const schemaNote =
-    schema === TEST_REQS_SCHEMA ? 'Return the test-requirements entries (NEW/UPDATE/COVERED).' : ''
+  schemaNote =
+    schemaNote || (schema === TEST_REQS_SCHEMA ? 'Return the test-requirements entries (NEW/UPDATE/COVERED).' : '')
   return agent(workerDriverPrompt({ workerPrompt, cwd, writes, schemaNote }), {
     schema,
     phase,
@@ -371,7 +384,8 @@ async function buildRound(slice, round, priorFindings) {
   // Build agent (source only) + T2 (new tests) + T3 (existing tests), concurrent.
   // File ownership keeps the concurrency safe: build->source, T2->new test
   // files, T3->existing test files. Nobody writes another's files.
-  await parallel([
+  const diffFilesNote = `After committing, set diffFiles to the line count of: git -C ${slice.worktree} diff --name-only origin/${slice.base}...HEAD`
+  const [built] = await parallel([
     () =>
       runWorker({
         workerPrompt: [
@@ -381,6 +395,7 @@ async function buildRound(slice, round, priorFindings) {
           `Never run tsc --noEmit anywhere in this repo; verify types by reading the diff.`,
           `A planned test that disagrees with your code: the plan wins -- fix the code, unless the plan detail itself is wrong, then stop and flag it.`,
           findingsBlock && buildFindings.length ? findingsBlock : '',
+          `Commit your source changes in ONE local commit before you finish. ${diffFilesNote}`,
         ]
           .filter(Boolean)
           .join('\n'),
@@ -388,7 +403,9 @@ async function buildRound(slice, round, priorFindings) {
         writes: true,
         phase: 'Build',
         label: `build:${slice.slug}:r${round}`,
-        agentType: 'tech-lead',
+        schema: BUILD_SCHEMA,
+        schemaNote: `Return summary and diffFiles. ${diffFilesNote}`,
+        agentType: 'general-purpose',
         model: MODELS.build,
       }),
     () =>
@@ -432,7 +449,7 @@ async function buildRound(slice, round, priorFindings) {
   await runWorker({
     workerPrompt: [
       `Test-agent T1, feed 2 (diff coverage) for slice "${slice.slug}". Worktree: ${slice.worktree}.`,
-      `Re-run T1 over git -C ${slice.worktree} diff origin/${slice.base}...HEAD for behaviour the plan never named (a branch, an invented error path, a caller it had to touch). If any is worth a test, write/append it (new file only) and commit locally. Otherwise report none.`,
+      `Re-run T1 over ${reviewDiff(slice)} for behaviour the plan never named (a branch, an invented error path, a caller it had to touch). If any is worth a test, write/append it (new file only) and commit locally. Otherwise report none.`,
     ].join('\n'),
     cwd: slice.worktree,
     writes: true,
@@ -440,6 +457,7 @@ async function buildRound(slice, round, priorFindings) {
     label: `t1diff:${slice.slug}:r${round}`,
     model: MODELS.tests,
   })
+  return built
 }
 
 // --- Phase 4: verify -------------------------------------------------------
@@ -459,7 +477,7 @@ async function verifyRound(slice, round, priorFindings = []) {
   const passes = [
     {
       pass: 'A',
-      ref: `${args.pluginRoot}/skills/solve-in-worktrees/SKILL.md "Phase 4 -- Pass A" (solution-vs-requirements over git -C ${slice.worktree} diff origin/${slice.base}...HEAD, against .scratch/${slice.slug}/requirements.md only). Per requirement: met / not met / met-but-broken with file:line, plus correctness/edge-case/dead-code defects. Not design/DRY/concurrency/tests.`,
+      ref: `${args.pluginRoot}/skills/solve-in-worktrees/SKILL.md "Phase 4 -- Pass A" (solution-vs-requirements over the diff below, against .scratch/${slice.slug}/requirements.md only). Per requirement: met / not met / met-but-broken with file:line, plus correctness/edge-case/dead-code defects. Not design/DRY/concurrency/tests.`,
     },
     {
       pass: 'B',
@@ -480,6 +498,7 @@ async function verifyRound(slice, round, priorFindings = []) {
           reviewPrompt: [
             `Read and perform EXACTLY this review, write no files, end with one verdict line RELEASE or CHANGES REQUIRED and a numbered findings list:`,
             p.ref,
+            `The diff under review is: ${reviewDiff(slice)} (includes staged, uncommitted test files). Use it instead of origin/${slice.base}...HEAD.`,
             targeted,
             `Reconciliation is not your job -- just report your own verdict and findings.`,
           ]
@@ -495,23 +514,21 @@ async function verifyRound(slice, round, priorFindings = []) {
   )
   const ok = results.filter(Boolean)
 
-  // Blocking = quorum P0 (any pass) OR quorum Pass-A not-met (severity P0 by
-  // convention in the Pass-A prompt). Only P0 gates. Single-vendor findings
-  // are surfaced, not looped on and not dropped.
+  // Any P0 blocks, even from one vendor: vendors word the same P0 differently, so a
+  // quorum on P0 text let "requirement not met" slip through. Only sub-P0 single-vendor
+  // findings go to needsHumanCheck. A seat that returned nothing also blocks.
   const byPass = { A: [], B: [], C: [] }
   for (const r of ok) byPass[r.pass].push(r.findings || [])
   let blocking = []
   const needsHumanCheck = []
+  if (ok.length < results.length) {
+    blocking.push({ severity: 'P0', text: `${results.length - ok.length} review seat(s) returned nothing`, forTests: false })
+  }
   for (const pass of ['A', 'B', 'C']) {
     const { quorum, single } = quorumFindings(byPass[pass])
-    if (solo) {
-      // One trusted reviewer re-checking specific fixes — no quorum to reach, so its own
-      // P0s block directly; lower severities on a re-check are noise, not surfaced.
-      blocking = blocking.concat(single.filter((f) => f.severity === 'P0'))
-    } else {
-      blocking = blocking.concat(quorum.filter((f) => f.severity === 'P0'))
-      for (const f of single) needsHumanCheck.push({ ...f, pass })
-    }
+    blocking = blocking.concat([...quorum, ...single].filter((f) => f.severity === 'P0'))
+    // On a codex-only re-check, lower severities are noise, not surfaced.
+    if (!solo) for (const f of single) if (f.severity !== 'P0') needsHumanCheck.push({ ...f, pass })
   }
   const released = blocking.length === 0
   return { released, blocking, needsHumanCheck }
@@ -548,7 +565,11 @@ async function runSlice(slice) {
       log(`slice ${slice.slug}: stopping at round ${round}, token budget nearly spent`)
       return { slug: slice.slug, released: false, halted: 'budget', roundsUsed: round - 1, needsHumanCheck: lastNeedsHuman }
     }
-    await buildRound(slice, round, priorFindings)
+    const built = await buildRound(slice, round, priorFindings)
+    if (!built || !(built.diffFiles > 0)) {
+      log(`slice ${slice.slug}: round ${round} build ${built ? 'produced an empty diff' : 'failed'} -- halting`)
+      return { slug: slice.slug, released: false, halted: built ? 'empty-diff' : 'build-failed', roundsUsed: round, needsHumanCheck: lastNeedsHuman }
+    }
     const verify = await verifyRound(slice, round, priorFindings)
     lastNeedsHuman = verify.needsHumanCheck
     if (verify.released) {

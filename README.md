@@ -14,7 +14,7 @@ flowchart TD
     D --> E["Split — pr-split-audit"]
     E --> F{{"🔒 split.md approved"}}
     F --> G{"Spec?"}
-    G -->|yes| H["Opus 4.8 High — grill → design.md → plan.md"]
+    G -->|yes| H["Opus 4.8 High — grill → openspec-propose"]
     H --> I{{"🔒 spec signed off"}}
     G -->|no| J["Per slice, in dependency order"]
     I --> J
@@ -45,7 +45,7 @@ All commands share one state contract: `.scratch/<slug>/` holding `progress.md` 
 
 | Command | Does |
 |---|---|
-| `sf:install` | Check (and help fix) the external deps the cross-vendor review needs: Cursor CLI, Codex CLI (the `codex` MCP is optional — `codex-agent` uses the CLI directly), then prompt for the `branchPrefix` config. Run this once per machine before the rest. |
+| `sf:install` | Check (and help fix) the external deps the factory needs: Cursor CLI, Codex CLI (the `codex` MCP is optional — `codex-agent` uses the CLI directly), the OpenSpec CLI (optional Phase 2.5 spec step), then prompt for the `branchPrefix` config. Run this once per machine before the rest. |
 | `sf:reload [plugin\|plugin@marketplace]` | Sync the installed plugin cache from its local marketplace source (default: `sf` itself) via `claude plugin update`, then tell you to restart to pick it up. Run after editing a command in `commands/`. |
 | `sf:start-feature <idea\|PRE-####>` | Full pipeline, idea → open PR. Delegates to the `start-feature` skill. |
 | `sf:investigate <report>` | Start from a reported bug instead of a feature idea: grill, root-cause, problems + requirements, decide on a spec, then run the factory from Phase 2 onward. |
@@ -58,7 +58,7 @@ All commands share one state contract: `.scratch/<slug>/` holding `progress.md` 
 | `sf:fix-pr [PR]` | Same green-gate as `sf:ci-green`, but reviews the diff with Codex + Cursor *before* each push so fewer bot round-trips are needed. |
 | `sf:view-agents` | Open the local agent-team dashboard (starts its dev server on :7777 first if needed). |
 
-The phase commands delegate to skills bundled with this plugin under `skills/` — `gather-requirements`, `pr-split-audit`, `solve-in-worktrees`, `review-feature`, `pre-pr-gate`, `fix-bot-comments`, `discussion-room`, `create-branch`, `create-pr`, `cursor-agent`, `diff-review`, `commit-hang-guard`, `lint-in-ignored-worktree`, `linear-update-issue-on-pr-merge`, `prune-merged-worktrees`, `setup-worktree-webapp`, `repo-instructions`, `start-feature` itself — plus the `tech-lead` subagent under `agents/`. One implementation each, no forks. `grill-me` is the one exception: it's not bundled here because it already ships in the separate `anthropic-skills` plugin, which most installs already have.
+The phase commands delegate to skills bundled with this plugin under `skills/` — `gather-requirements`, `pr-split-audit`, `solve-in-worktrees`, `review-feature`, `pre-pr-gate`, `fix-bot-comments`, `discussion-room`, `create-branch`, `create-pr`, `cursor-agent`, `diff-review`, `commit-hang-guard`, `lint-in-ignored-worktree`, `linear-update-issue-on-pr-merge`, `prune-merged-worktrees`, `setup-worktree-webapp`, `repo-instructions`, `start-feature` itself. One implementation each, no forks. `grill-me` is the one exception: it's not bundled here because it already ships in the separate `anthropic-skills` plugin, which most installs already have.
 
 ### Portability
 

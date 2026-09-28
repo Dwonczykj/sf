@@ -153,7 +153,8 @@ is what the tests are specified from.
 ## Phase 3 — Build agent
 
 One agent per worktree, all spawned in a single message so they run concurrently
-(`tech-lead` for TypeScript work in this repo, otherwise `general-purpose`).
+(`general-purpose` -- no separate `tech-lead` persona; the model itself carries the
+TypeScript/Node expertise, the prompt supplies the repo standards).
 
 **Worker model + provider:** before spawning, resolve each role's model — per-run flag
 → `~/.claude/sf-models.json` (set by `/sf:models`) → blanket `--model` → default: the

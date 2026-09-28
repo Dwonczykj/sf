@@ -79,7 +79,7 @@ Keep it concise (scannable in 60s). The plan is the deliverable of this skill â€
 
 ## Phase 5: Execute (only on user approval)
 
-Spawn one `tech-lead` agent **per slice** with `isolation: "worktree"`. Run independent leaves in parallel (single message, multiple Agent calls). The recipe each agent follows:
+Spawn one `general-purpose` agent **per slice** with `isolation: "worktree"`. Run independent leaves in parallel (single message, multiple Agent calls). The recipe each agent follows:
 
 ```bash
 git fetch origin && git fetch origin pull/<source-pr>/head:pr-<source-pr>
