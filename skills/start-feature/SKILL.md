@@ -46,15 +46,15 @@ Run **`pr-split-audit`** against `requirements.md`. It plans slices so the bulk 
 
 ## Phase 2.5 — Spec  🔒 human gate (optional)
 
-Once the plans are done and **always** before building anything substantial, ask the user plainly whether this feature needs a spec. If no, skip to Phase 3. If yes, spawn **one Opus 4.8 (High reasoning)** agent to author it — this phase is only that agent's job:
+Once the plans are done and **always** before building anything substantial, ask the user plainly whether this feature needs a spec. If no, skip to Phase 3. If yes, spawn **one Opus 4.8 (High reasoning)** agent to author it via OpenSpec — this phase is only that agent's job:
 
-1. The agent runs **`grill-me`** on the user over the approved plan (`requirements.md` + `split.md`) until there is **zero** ambiguity about the requirements the design will encode. The grilling result is the spec's sole input; it does not re-trace the codebase.
-2. It writes **`design.md` first, then `plan.md`**, into the repo spec tree, following `specs/README.md` (co-location, numbering assigned at promotion) and `specs/_templates/{design.md,plan.md}` exactly — the same shape, headings and frontmatter as the existing `specs/` examples.
-3. The spec must be **shorter and more concise than the examples**, exceptionally short, and carry **no vernacular** — plain words a senior leader reads without decoding. Cut everything the templates don't require.
-4. Human gate: sign-off on `design.md` before `plan.md` is written, and on `plan.md` before the phase closes. Record the spec path in `progress.md`.
-5. **The spec rides the first code PR — never its own PR.** Do not open, or plan, a standalone spec/docs PR. The `specs/<n>-<slug>/{design,plan}.md` files are committed onto the **first slice in merge order** (from `split.md`) during Phase 3, so they land in that slice's PR alongside its code. If the run is a single slice, they go in that one. Note in `progress.md` which slice carries the spec.
+1. The agent runs **`grill-me`** on the user over the approved plan (`requirements.md` + `split.md`) until there is **zero** ambiguity about the requirements the spec will encode. The grilling result is the change description handed to OpenSpec; it does not re-trace the codebase.
+2. It runs the **`openspec-propose`** skill (generated into this repo by `openspec update` — see `sf:install`) to create the change and write `proposal.md`, `design.md`, delta `specs/<capability>/spec.md`, and `tasks.md` in one pass under `openspec/changes/<slug>/`. If the repo has no `openspec/` root yet, that skill's own project-check offers `openspec init` — let it handle the scaffold rather than hand-rolling one. `openspec status --change <slug> --json` gives the real per-artifact build order.
+3. The spec must be **shorter and more concise than the examples**, exceptionally short, and carry **no vernacular** — plain words a senior leader reads without decoding. Cut everything OpenSpec's schema doesn't require.
+4. Human gate: sign off each artifact as `openspec status` reports it ready — no artifact ships un-signed. Record the change slug in `progress.md`.
+5. **The change rides the first code PR — never its own PR.** Do not open, or plan, a standalone spec/docs PR. The whole `openspec/changes/<slug>/` directory (proposal, design, delta specs, tasks, `.openspec.yaml`) is committed onto the **first slice in merge order** (from `split.md`) during Phase 3, so it lands in that slice's PR alongside its code. If the run is a single slice, it goes in that one. Note in `progress.md` which slice carries the change.
 
-The Phase 3 per-slice plan (solve-in-worktrees) is unchanged; the spec is the aligned, durable design/plan record that feeds it, not a replacement for it.
+The Phase 3 per-slice plan (solve-in-worktrees) is unchanged; the OpenSpec change is the aligned, durable design record that feeds it, not a replacement for it. Phase 4 archives it after merge.
 
 ## Phase 3 — Build + gate each slice, PRE-PR
 
@@ -62,7 +62,7 @@ Worker models + provider: the build + test sub-agents' models follow `~/.claude/
 
 Per slice, in dependency order (independent leaves in parallel):
 
-1. **Worktree + plan** — follow **`solve-in-worktrees`** Phases 1–2: one sibling worktree off `origin/staging` (branch per `create-branch`), `pnpm i`, then the slice's requirements + solution written out. Run **`repo-instructions`** (consume step): append the matched rules under a `## Repo build-checks (sf:repo-instructions)` heading in the slice's `requirements.md`, so the build agent and verify/test agents carry the **Check** and the non-Claude vendors see the rule. **If a Phase 2.5 spec exists and this is the first slice in merge order**, copy `specs/<n>-<slug>/{design,plan}.md` into this worktree and commit them on its branch (a `docs: add <slug> spec` commit is fine) so the spec ships in this slice's PR — no separate spec PR.
+1. **Worktree + plan** — follow **`solve-in-worktrees`** Phases 1–2: one sibling worktree off `origin/staging` (branch per `create-branch`), `pnpm i`, then the slice's requirements + solution written out. Run **`repo-instructions`** (consume step): append the matched rules under a `## Repo build-checks (sf:repo-instructions)` heading in the slice's `requirements.md`, so the build agent and verify/test agents carry the **Check** and the non-Claude vendors see the rule. **If a Phase 2.5 spec exists and this is the first slice in merge order**, copy `openspec/changes/<slug>/` into this worktree and commit it on its branch (a `docs: add <slug> openspec change` commit is fine) so the spec ships in this slice's PR — no separate spec PR.
 2. **Review the plan before building** 🔒 — **`solve-in-worktrees`** Phase 2b: Codex, Gemini (`gemini-3.8-flash-high` via cursor-agent), and Cursor (`gpt-5.3-codex-high`) review the same plan concurrently against the real codebase — requirement coverage, root cause vs symptom, reuse it's reinventing, blast radius, ambiguity. Cap 2 rounds. It also checks the plan is concrete enough to write tests against, since the approved plan — not the built code — is what the test agents work from. Ambiguity findings come back to you; the approved plan goes to the build agent **and** to T1 at the same moment.
 3. **Build + tests, concurrently** — **`solve-in-worktrees`** Phases 3 and 3b: a build agent carrying the approved plan + repo standards (source files only), running alongside three Codex test agents (test files only) — T1 test-requirement gathering, T2 create, T3 update. T1 and T2 work from the **plan**, so tests exist before the code and the suite is deliberately red until the build lands; T1 re-runs over the first diff for behaviour the plan never named, before the verify passes fire. A plan-derived test that disagrees with the implementation is a build finding — the plan wins — unless the plan detail itself was wrong, which comes back to you. All commit locally; sub-agents can't push.
 4. **Review until releasable** — run **`/review-feature`** on that worktree with `.scratch/<slug>/requirements.md` (scoped to the slice) as the contract. It owns the whole loop and its two stages: gate the branch pre-PR via `pre-pr-gate` — three passes, each run by Codex, Gemini, and Cursor, cap 4 rounds — then, once you've pushed and opened the PR, loop CI checks + bot comments via `fix-bot-comments` until green with every thread resolved. The loop happens on the branch first, not on a PR someone is watching.
@@ -71,7 +71,7 @@ Per slice, in dependency order (independent leaves in parallel):
 
 ## Phase 4 — Close out
 
-`/review-feature` has already left CI green and every bot thread resolved. On merge, run **`linear-update-issue-on-pr-merge`**. Keep worktrees until merge, then `prune-merged-worktrees`.
+`/review-feature` has already left CI green and every bot thread resolved. On merge, run **`linear-update-issue-on-pr-merge`**, then — if the run carried an OpenSpec change — run the **`openspec-archive-change`** skill (or `openspec archive <slug>`) to promote its delta specs into `openspec/specs/` and archive the change folder. Keep worktrees until merge, then `prune-merged-worktrees`.
 
 ## Phase 5 — Final report
 
@@ -111,7 +111,7 @@ Cover every turn including the ones that changed direction or corrected an earli
 | start of Phase 1 | clarifying questions answered | human |
 | after Phase 1 | contract signed off | human |
 | after Phase 2 | split approved | human |
-| after the split, before build | spec required? if yes, Opus 4.8 High agent writes design.md then plan.md, each signed off | human (optional) |
+| after the split, before build | spec required? if yes, Opus 4.8 High agent grills then runs `openspec-propose`, each artifact signed off | human (optional) |
 | during plan review, before `PLAN OK` | width questions answered — which behaviour of the touched code the tests will freeze (pin / leave / it's a bug) | human |
 | after the plan, before the build | plan review `PLAN OK` from Codex, Gemini, **and** Cursor — releases the plan to the build agent *and* to T1 | tool (3 models) |
 | plan-derived test vs implementation | plan wins → build finding; wrong plan detail → your call | tool + human |

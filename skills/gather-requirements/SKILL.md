@@ -39,4 +39,4 @@ Turn a messy feature idea into a locked set of one-sentence requirements. Invest
 
 ## Handoff
 
-Requirements feed a spec or PRD — they are not the spec. When the list is locked, stop and offer to hand off (e.g. `design.md`, `/to-prd`, `/product-spec`). Do not design the implementation or write code from here.
+Requirements feed a spec or PRD — they are not the spec. When the list is locked, stop and offer to hand off (e.g. `openspec-propose`, `/to-prd`, `/product-spec`). Do not design the implementation or write code from here.

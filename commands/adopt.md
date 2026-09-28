@@ -1,7 +1,7 @@
 ---
 description: "Seed the factory from THIS session's context (+ any existing spec), cut a branch, then run start-feature from the first unmet gate."
 ---
-Adopt work already scoped in the current session into the software factory. Unlike `sf:start-feature` (cold start) and `sf:continue` (resume persisted `.scratch/` state), this one **synthesises the conversation you're already in** — plus any `specs/<n>-<slug>/` design+plan already written — into a draft contract, cuts the branch, and hands to the `start-feature` pipeline entering at the first gate the seed doesn't already satisfy.
+Adopt work already scoped in the current session into the software factory. Unlike `sf:start-feature` (cold start) and `sf:continue` (resume persisted `.scratch/` state), this one **synthesises the conversation you're already in** — plus any `openspec/changes/<slug>/` already written — into a draft contract, cuts the branch, and hands to the `start-feature` pipeline entering at the first gate the seed doesn't already satisfy.
 
 Feature: $ARGUMENTS if given, else infer from this session's context.
 
@@ -9,10 +9,10 @@ Feature: $ARGUMENTS if given, else infer from this session's context.
 
 2. **Cut the branch.** Run the `create-branch` skill (base `staging` for web-app), passing the type + slug + any Linear code from step 1. Honour its dirty-tree stop: never stash or discard without being told.
 
-3. **Seed the contract.** Create `.scratch/<slug>/` and synthesise, from the session context and any existing `specs/<n>-<slug>/{design,plan}.md`:
+3. **Seed the contract.** Create `.scratch/<slug>/` and synthesise, from the session context and any existing `openspec/changes/<slug>/`:
    - `requirements.md` — the numbered requirement list implied by what's already been decided this session. Mark it **DRAFT — not signed off**.
    - `split.md` — if a plan already names slices/PRs, copy them in; else leave a note that the split is pending.
-   - `progress.md` — the start-feature phase checklist, with each phase the seed already covers marked **seeded (draft)**, everything else **pending**. Record the spec path if one exists.
+   - `progress.md` — the start-feature phase checklist, with each phase the seed already covers marked **seeded (draft)**, everything else **pending**. Record the OpenSpec change slug if one exists.
    Seeding never counts as sign-off. A seeded phase is a draft to confirm, not a gate to skip.
 
 4. **Report the gap in one line:** which phases are seeded-draft, which are still open, and the first gate that needs you (usually the Phase 1 contract sign-off).

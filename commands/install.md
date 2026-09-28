@@ -13,14 +13,16 @@ Verify the things the factory's cross-vendor review (Codex + Gemini-via-Cursor +
    ```
    Then re-run `claude mcp list` to confirm it shows connected. If you'd rather not register an MCP, the CLI (`codex-agent`) covers codex on its own.
 
+4. **OpenSpec CLI** — run `openspec --version`. If missing: give me `npm install -g openspec`. No login needed. This is what the optional Phase 2.5 spec step (`start-feature` / `plan` / `adopt` / `investigate`) depends on for `openspec propose` / `archive` / `sync`. Per-repo setup (`openspec init` + `openspec update`, which generates the `openspec-propose` / `openspec-archive-change` / … skills into that repo) happens lazily the first time a run in that repo needs a spec — not here.
+
 Then finish, in this order:
 
-**a. One-line status summary** — which items were already fine, which I fixed, which still need me (auth logins can't be scripted). If Cursor + Codex CLI both pass, say the factory's cross-vendor review is ready.
+**a. One-line status summary** — which items were already fine, which I fixed, which still need me (auth logins can't be scripted). If Cursor + Codex CLI both pass, say the factory's cross-vendor review is ready; note separately whether the OpenSpec CLI is ready for the optional spec step.
 
 **b. How `start-feature` works** (print this, keyword/arrow form):
-> frame → `<slug>` + `progress.md` (state) → **scope** (gather-requirements + grill-me) → `requirements.md` 🔒 → **split** (pr-split-audit) → `split.md` 🔒 → optional **spec** (Opus-4.8-High grill → design.md → plan.md) 🔒 → per slice: worktree → **plan-review** 3 models 🔒 → build agent ∥ 3 test agents (tests-first) → **verify** 3 passes × 3 models, loop → RELEASE → open PR → CI + bot-comments loop → green → **report**. State = markdown in `.scratch/<slug>/`; gates = real tool calls (Codex / lint / jest) + human 🔒; orchestration = prompt, not script (deterministic machine = `sf:build-verify`).
+> frame → `<slug>` + `progress.md` (state) → **scope** (gather-requirements + grill-me) → `requirements.md` 🔒 → **split** (pr-split-audit) → `split.md` 🔒 → optional **spec** (Opus-4.8-High grill → `openspec-propose`: proposal → design → delta specs → tasks) 🔒 → per slice: worktree → **plan-review** 3 models 🔒 → build agent ∥ 3 test agents (tests-first) → **verify** 3 passes × 3 models, loop → RELEASE → open PR → CI + bot-comments loop → green → merge → `openspec archive` → **report**. State = markdown in `.scratch/<slug>/`; gates = real tool calls (Codex / lint / jest) + human 🔒; orchestration = prompt, not script (deterministic machine = `sf:build-verify`).
 
-**c. Adopting an in-flight session** (one line): `/sf:adopt` seeds the factory from the session you're already in (plus any existing `specs/<n>-<slug>/`), cuts the branch, and enters the `start-feature` pipeline at the first unmet gate — grilling only to close gaps in the seeded contract, not re-scoping from zero; use it instead of `start-feature` when this chat already did the scoping, and `sf:continue` to resume a run whose state is already on disk.
+**c. Adopting an in-flight session** (one line): `/sf:adopt` seeds the factory from the session you're already in (plus any existing `openspec/changes/<slug>/`), cuts the branch, and enters the `start-feature` pipeline at the first unmet gate — grilling only to close gaps in the seeded contract, not re-scoping from zero; use it instead of `start-feature` when this chat already did the scoping, and `sf:continue` to resume a run whose state is already on disk.
 
 **d. Model provider** (one line): `/sf:model-provider anthropic|codex|cursor` routes the build + test sub-agents to one vendor — flip it to spare Anthropic usage limits; the cross-vendor review panel stays as is.
 
