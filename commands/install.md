@@ -1,5 +1,5 @@
 ---
-description: "Set up sf on this machine: ask which reviewers, data, sheet and UI tools you use, check each is installed and logged in, write ~/.claude/sf-tools.json, then OpenSpec and Qodo (both optional), how start-feature works, and the plugin settings."
+description: "Set up sf on this machine: ask which reviewers, data, sheet and UI tools you use, check each is installed and logged in, write ~/.claude/sf-tools.json, then OpenSpec and Qodo (both optional), how start-feature works, and last the plugin settings."
 ---
 Set sf up for the tools this machine actually has. sf reaches each kind of tool through one skill (a port) that falls back when the tool is missing, so a run never fails partway for want of a login. Don't just dump a checklist: ask, run the checks, report pass or fail per item, and only hand me the command for what's actually missing.
 
@@ -53,7 +53,7 @@ A run started in the cloud has none of these logins; every port then falls back,
 
 2. **Qodo CLI (optional)**: run `qodo --version`. If missing, give me the official installer, `curl -fsSL https://get.qodo.ai | sh` (docs: https://docs.qodo.ai/agentic-toolbox/cli), then tell me to run `qodo login` myself (browser auth). Confirm with `qodo read whoami --json` (exit 0, shows an email). This powers `pre-pr-gate` Pass E, a local run of the Qodo PR reviewer before the PR opens. Without it the gate skips Pass E and everything else runs as normal, so a missing Qodo is a note, not a failure. One thing the CLI can't check up front: the repo must be connected to my Qodo workspace (Qodo's Git integration settings). If it isn't, the first review fails with `repo_not_connected`, and the gate reports that and carries on.
 
-Then finish, in this order:
+Then print these, in this order, before step 5:
 
 **a. One-line status summary** — which items were already fine, which I fixed, which still need me (auth logins can't be scripted). Say whether the review panel is cross-vendor or single-vendor; note separately whether the OpenSpec CLI is ready for the optional spec step, and whether Qodo is ready for the optional Pass E.
 
@@ -64,7 +64,34 @@ Then finish, in this order:
 
 **d. Model provider** (one line): `/sf:model-provider anthropic|codex|cursor` routes the build + test sub-agents to one vendor — flip it to spare Anthropic usage limits; the review panel stays as set here. Re-run `/sf:install` any time to change the tools.
 
-**e. Plugin settings** — then ask me to run `/plugin configure sf` and set three options; it's an interactive prompt, so I run it myself, and can re-run it anytime to change them. All three can stay blank:
-- `branchPrefix`: prefix for branches sf creates (blank falls back to my shell username via `whoami`).
-- `prAssignee`: GitHub login sf assigns the PRs it opens to (blank assigns to me, `@me`).
-- `linearProject`: name of the Linear project sf searches when linking a PR to an issue, and checks when it updates the issue after merge (blank searches all my assigned issues and skips the project check).
+## 5. Plugin settings (always the last step)
+
+Do this on every run, even when nothing else changed, and say nothing after it except the restart line.
+
+sf's three options are its `userConfig` (in `.claude-plugin/plugin.json`). Claude Code keeps their values in `~/.claude/settings.json` under `pluginConfigs["<id>"].options`, where `<id>` is sf's key in that file's `enabledPlugins` (usually `sf@sf`). Read the current values:
+
+```bash
+python3 -c 'import json,os;s=json.load(open(os.path.expanduser("~/.claude/settings.json")));i=next(k for k in s.get("enabledPlugins",{}) if k.startswith("sf@"));print(i,json.dumps(s.get("pluginConfigs",{}).get(i,{}).get("options",{})))'
+```
+
+Then one `AskUserQuestion` call with three questions. Each shows the current value and lets me keep it; I type a new one under Other. Blank is allowed for all three:
+
+1. **"Branch prefix for the branches sf creates (`<prefix>/feat-PRE-123-title`)? Now: `<current or blank>`."** Header `Branch`. Options: **Keep `<current>`** (or **Keep blank (uses `<whoami output>`)**), and **Clear it (uses `<whoami output>`)** when it is set, else **Use `<whoami output>`**.
+2. **"GitHub login sf assigns the PRs it opens to? Now: `<current or blank>`."** Header `Assignee`. Options: **Keep `<current>`** (or **Keep blank (assigns to me)**), and **Clear it (assigns to me)** when it is set, else **Use `<gh api user -q .login>`**.
+3. **"Linear project sf searches when linking a PR to an issue, and checks when it updates the issue after merge? Now: `<current or blank>`."** Header `Linear`. Options: **Keep `<current>`** (or **Keep blank (searches all my assigned issues)**), and **Clear it (searches all my assigned issues)** when it is set, else **Type a project name under Other**.
+
+Write the answers back, changing only that one entry so the rest of `settings.json` stays as it is (`""` for blank), then read them back with the command above:
+
+```bash
+python3 - <id> '<branchPrefix>' '<prAssignee>' '<linearProject>' <<'PY'
+import json, os, sys
+p = os.path.expanduser("~/.claude/settings.json")
+s = json.load(open(p))
+o = s.setdefault("pluginConfigs", {}).setdefault(sys.argv[1], {}).setdefault("options", {})
+o.update(zip(["branchPrefix", "prAssignee", "linearProject"], sys.argv[2:5]))
+json.dump(s, open(p, "w"), indent=2)
+open(p, "a").write("\n")
+PY
+```
+
+End with this line, and nothing after it: **Restart Claude Code to apply the new sf settings.** (`/plugin configure sf` changes them later too.)
