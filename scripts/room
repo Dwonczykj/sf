@@ -6,6 +6,7 @@
   signoff  append Joey's answer, gate sign-off or free message to signoffs.jsonl (the room server, or
            the orchestrator with Joey's words)
   start    refuse to start a ticket whose human gates have no sign-off; else print what to start
+  tier     print Joey's standing model and effort override for a ticket, or null
   render   write progress.md's board from tickets.json and the open questions in events.jsonl
 
 Every session writes events through this, never with an editor or a shell redirect, so each line
@@ -27,9 +28,10 @@ STATES = ("PROBE", "NOT STARTED", "BUILDING", "WAITING ON JOEY", "LOCAL", "PUSHE
 GATES = ("framed", "requirements", "grilled", "impact", "steward", "split", "spec", "planReview", "gate",
          "ci", "complexity")
 FIELDS = ("id", "title", "kind", "queue", "state", "after", "stacksOn", "worktree", "branch", "pr", "sha",
-          "ci", "session", "needs", "gates", "note", "model", "effort", "complexity", "blast", "budget")
+          "ci", "session", "sessionId", "needs", "gates", "note", "model", "effort", "complexity", "blast", "budget")
 NAME = re.compile(r"^[A-Za-z0-9][\w.-]{0,63}$")
 SHA = re.compile(r"^[0-9a-f]{7,40}$")
+TIER = re.compile(r"^claude-[a-z0-9.-]+ (low|medium|high|xhigh|max)$")
 MAX_NOTE = 500
 
 
@@ -121,11 +123,19 @@ def ask(a):
 def signoff(a):
     if a.message and a.answer is None:
         a.answer = a.quote[:MAX_NOTE]  # a free message has no options; the quote is the whole of it
+    if a.tier and a.answer is None:
+        a.answer = a.tier
     error = common(a) or one_line(a.answer, "--answer") or one_line(a.quote, "--quote", 2000)
-    if not error and a.message and (a.gate or a.question or a.change):
+    if not error and a.tier is not None:
+        if a.gate or a.question or a.change or a.message:
+            error = "give --tier alone"
+        elif a.tier != "clear" and not TIER.match(a.tier):
+            error = "--tier is \"<model id> <low|medium|high|xhigh|max>\", e.g. \"claude-opus-5-5 xhigh\", or clear"
+    elif not error and a.message and (a.gate or a.question or a.change):
         error = "give --message alone"
-    if not error and not a.message and (a.gate and (a.question or a.change) or not (a.gate or a.question or a.change)):
-        error = "give --gate alone, or --question and/or --change, or --message"
+    if not error and not a.message and not a.tier and (
+            a.gate and (a.question or a.change) or not (a.gate or a.question or a.change)):
+        error = "give --gate alone, or --question and/or --change, or --message, or --tier"
     if not error and a.question is not None and not a.question.isdigit():
         error = "--question is the question event's id"
     if not error and a.change is not None and not (
@@ -134,12 +144,13 @@ def signoff(a):
     if error:
         return fail("signoff", error)
     what = {k: v for k, v in (("gate", a.gate), ("question", a.question and int(a.question)), ("change", a.change),
-                              ("message", a.message)) if v}
+                              ("message", a.message), ("tier", a.tier)) if v}
     line = append(os.path.join(a.dir, "signoffs.jsonl"),
                   {"ticket": a.ticket, **what, "answer": a.answer.strip(), "quote": a.quote.strip()})
     # The answer event wakes the orchestrator's monitor and closes the question on the board. Its role is
     # joey, never orchestrator, so an orchestrator skipping its own events still wakes on it.
-    label = "message" if a.message else f"re {a.question}" if a.question else f"signoff {a.gate or a.change}"
+    label = ("message" if a.message else f"tier {a.tier}" if a.tier else f"re {a.question}" if a.question
+             else f"signoff {a.gate or a.change}")
     event(a.dir, a.ticket, "joey", "answer", f"{label}: {a.answer.strip()}"[:MAX_NOTE])
     print(line)
     return 0
@@ -188,6 +199,21 @@ def missing_gates(t, signoffs):
     return [g for g in need if not signed(signoffs, g, t["id"])]
 
 
+def tier_override(signoffs, ticket):
+    """Joey's latest tier line for the ticket or for all, or None once he has cleared it (or never set one)."""
+    last = next((s for s in reversed(signoffs) if s.get("tier") and s.get("ticket") in (ticket, "all")), None)
+    return None if not last or last["tier"] == "clear" else {"tier": last["tier"], "quote": last["quote"],
+                                                              "signoff": last["id"]}
+
+
+def tier(a):
+    error = common(a)
+    if error:
+        return fail("tier", error)
+    print(json.dumps(tier_override(read_jsonl(os.path.join(a.dir, "signoffs.jsonl")), a.ticket)))
+    return 0
+
+
 def start(a):
     doc, error = load_tickets(a.dir)
     if error:
@@ -195,7 +221,8 @@ def start(a):
     t = next((t for t in doc["tickets"] if t["id"] == a.ticket), None)
     if t is None:
         return fail("start", f"no ticket {a.ticket!r} in tickets.json")
-    missing = missing_gates(t, read_jsonl(os.path.join(a.dir, "signoffs.jsonl")))
+    signoffs = read_jsonl(os.path.join(a.dir, "signoffs.jsonl"))
+    missing = missing_gates(t, signoffs)
     if missing:
         return fail("start", f"{a.ticket} has no sign-off in signoffs.jsonl for: {', '.join(missing)}. "
                              "Ask Joey, record his answer with `room signoff`, then retry.", 1)
@@ -205,7 +232,7 @@ def start(a):
     print(json.dumps({"start": f"{slug}-{t['id']}", "ticket": t["id"], "title": t["title"],
                       "worktree": t.get("worktree"), "branch": t.get("branch"), "base": base,
                       "stateDir": os.path.abspath(a.dir), "room": os.path.join(os.path.abspath(a.dir), "room"),
-                      "needs": t.get("needs") or []}, indent=2))
+                      "needs": t.get("needs") or [], "override": tier_override(signoffs, t["id"])}, indent=2))
     return 0
 
 
@@ -308,15 +335,19 @@ def main(argv=None):
     sp.add_argument("--change", help="requirements.md or openspec/changes/<name>: lets that file change; "
                                      "alone or with --question")
     sp.add_argument("--message", action="store_true", help="a free message from Joey, tied to no question or gate")
-    sp.add_argument("--answer", help="the option Joey picked, or a one-line summary; optional with --message")
+    sp.add_argument("--tier", help="\"<model id> <effort>\" Joey set for the ticket, winning over the routing table "
+                                   "until he clears it with --tier clear")
+    sp.add_argument("--answer", help="the option Joey picked, or a one-line summary; optional with --message or --tier")
     sp.add_argument("--quote", required=True, help="Joey's words, verbatim")
 
     stp = cmd("start", "check a ticket's human gates, then print what to start", ticket=False)
     stp.add_argument("ticket")
     cmd("render", "write progress.md from tickets.json", ticket=False)
+    tp = cmd("tier", "print Joey's standing tier override for a ticket as JSON, or null", ticket=False)
+    tp.add_argument("ticket")
 
     a = p.parse_args(argv)
-    return {"log": log, "ask": ask, "signoff": signoff, "start": start, "render": render}[a.cmd](a)
+    return {"log": log, "ask": ask, "signoff": signoff, "start": start, "render": render, "tier": tier}[a.cmd](a)
 
 
 if __name__ == "__main__":

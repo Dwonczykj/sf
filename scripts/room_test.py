@@ -63,7 +63,8 @@ with tempfile.TemporaryDirectory() as d:
     tickets = {"slug": "demo", "orchestrator": "demo-orch", "frame": ["Frame: demo"], "tickets": [
         {"id": "s1", "title": "slice 1, schema", "state": "PR", "pr": 14646, "ci": "green", "sha": "a1b2c3d4e5",
          "branch": "joey/s1", "gates": {"spec": "requested"}},
-        {"id": "s2", "title": "slice 2, write path", "state": "NOT STARTED", "stacksOn": "s1", "needs": ["gcloud"]},
+        {"id": "s2", "title": "slice 2, write path", "state": "NOT STARTED", "stacksOn": "s1", "needs": ["gcloud"],
+         "session": "demo-s2", "sessionId": "local_0a1b"},
         {"id": "p1", "title": "probe: rate limit", "state": "PROBE", "stacksOn": "s2"},
     ]}
     with open(os.path.join(d, "tickets.json"), "w") as f:
@@ -77,6 +78,7 @@ with tempfile.TemporaryDirectory() as d:
     assert r.returncode == 0, r.stderr
     started = json.loads(r.stdout)
     assert started["base"] == "joey/s1" and started["needs"] == ["gcloud"] and started["start"] == "demo-s2"
+    assert started["override"] is None
     r = run(d, "s1", cmd="start")
     assert r.returncode == 1 and "spec" in r.stderr, r.stderr
 
@@ -126,6 +128,7 @@ with tempfile.TemporaryDirectory() as d:
     assert not hook("Bash", {"command": "git commit -m \"docs: room signoff; room render\""}, worker)
     assert not hook("Bash", {"command": "grep -n 'room signoff' commands/orchestrate.md"}, worker)
     assert not hook("Bash", {"command": f"tail -n +3 {d}/events.jsonl > /tmp/x"}, worker)
+    assert not hook("Bash", {"command": f"python3 {d}/room tier --dir {d} s1"}, worker)
     assert not hook("Write", {"file_path": "/tmp/elsewhere/ledger.md"}, worker)
     reqs = os.path.join(d, "requirements.md")
     assert hook("Edit", {"file_path": reqs}, orch)  # requirements signed off above, no change sign-off
@@ -145,5 +148,24 @@ with tempfile.TemporaryDirectory() as d:
     assert run(d, "--ticket", "all", "--message", "--quote", "two\nlines", cmd="signoff").returncode != 0
     assert run(d, "--ticket", "s1", "--role", "joey", "--type", "note", "--note", "it's me").returncode != 0
     assert run(d, "--ticket", "s1", "--role", "orchestrator", "--type", "model", "--note", "sonnet-5.5 high: CI watch").returncode == 0
+
+    # signoff --tier: Joey's override wins until he clears it; a ticket's own line beats an older "all" line.
+    assert json.loads(run(d, "s1", cmd="tier").stdout) is None
+    r = run(d, "--ticket", "s1", "--tier", "claude-opus-5-5 xhigh", "--quote", "put s1 on opus xhigh", cmd="signoff")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["tier"] == "claude-opus-5-5 xhigh"
+    answer = [json.loads(l) for l in open(os.path.join(d, "events.jsonl"))][-1]
+    assert answer["role"] == "joey" and answer["note"] == "tier claude-opus-5-5 xhigh: claude-opus-5-5 xhigh", answer
+    o = json.loads(run(d, "s1", cmd="tier").stdout)
+    assert o["tier"] == "claude-opus-5-5 xhigh" and o["quote"] == "put s1 on opus xhigh", o
+    assert json.loads(run(d, "s2", cmd="tier").stdout) is None
+    assert run(d, "--ticket", "all", "--tier", "claude-sonnet-5-5 high", "--quote", "all on sonnet", cmd="signoff").returncode == 0
+    assert json.loads(run(d, "s2", cmd="tier").stdout)["tier"] == "claude-sonnet-5-5 high"
+    assert run(d, "--ticket", "s1", "--tier", "clear", "--quote", "back to the table", cmd="signoff").returncode == 0
+    assert json.loads(run(d, "s1", cmd="tier").stdout) is None
+    for bad in (["--tier", "opus"], ["--tier", "claude-opus-5-5 turbo"], ["--tier", "claude-opus-5-5 high", "--gate", "split"],
+                ["--tier", "claude-opus-5-5 high", "--message"]):
+        assert run(d, "--ticket", "s1", *bad, "--quote", "x", cmd="signoff").returncode != 0, bad
+    assert run(os.path.join(d, "missing"), "s1", cmd="tier").returncode != 0
 
 print("room_test: ok")
