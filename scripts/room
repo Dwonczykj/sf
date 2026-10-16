@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""Build-room CLI. `room log` appends one validated event to <dir>/events.jsonl.
+"""Build-room CLI over one run's state dir.
+
+  log      append one validated event to events.jsonl (every session)
+  ask      append a `question` event shaped like AskUserQuestion (orchestrator)
+  signoff  append Joey's answer or gate sign-off to signoffs.jsonl (orchestrator, with Joey's words)
+  start    refuse to start a ticket whose human gates have no sign-off; else print what to start
+  render   write progress.md's board from tickets.json and the open questions in events.jsonl
 
 Every session writes events through this, never with an editor or a shell redirect, so each line
-parses and carries a sequence id the orchestrator's ledger uses as its cursor.
+parses and carries a sequence id the orchestrator's ledger uses as its cursor. Only signoffs.jsonl
+counts as Joey's words: anyone can append to events.jsonl.
 """
 import argparse
 import fcntl
@@ -16,69 +23,290 @@ TYPES = ("state", "question", "answer", "blocker", "ci", "note")
 # Board states from start-feature's "Board format". A state event's note starts with one of these.
 STATES = ("PROBE", "NOT STARTED", "BUILDING", "WAITING ON JOEY", "LOCAL", "PUSHED", "DRAFT PR", "PR",
           "COMPLEXITY REVIEW", "DONE", "MERGED")
+GATES = ("framed", "requirements", "grilled", "impact", "steward", "split", "spec", "planReview", "gate",
+         "ci", "complexity")
+FIELDS = ("id", "title", "kind", "queue", "state", "after", "stacksOn", "worktree", "branch", "pr", "sha",
+          "ci", "session", "needs", "gates", "note")
 NAME = re.compile(r"^[A-Za-z0-9][\w.-]{0,63}$")
 SHA = re.compile(r"^[0-9a-f]{7,40}$")
 MAX_NOTE = 500
 
 
-def validate(a):
-    if not os.path.isdir(a.dir):
-        return f"--dir {a.dir} is not a directory"
-    if not NAME.match(a.ticket):
-        return f"--ticket {a.ticket!r} must be letters, digits, '.', '_' or '-'"
-    if not NAME.match(a.role):
-        return f"--role {a.role!r} must be letters, digits, '.', '_' or '-'"
-    if a.sha is not None and not SHA.match(a.sha):
-        return f"--sha {a.sha!r} must be 7 to 40 lowercase hex characters"
-    note = a.note.strip()
-    if not note or len(note) > MAX_NOTE:
-        return f"--note must be 1 to {MAX_NOTE} characters; put detail in a file and name its path"
-    if any(ord(c) < 32 for c in note):
-        return "--note must be one line, without control characters"
-    if a.type == "state" and not any(note == s or note.startswith(s + " ") for s in STATES):
-        return f"a state note must start with one of: {', '.join(STATES)}"
+def now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def one_line(text, what, limit=MAX_NOTE):
+    text = (text or "").strip()
+    if not text or len(text) > limit:
+        return f"{what} must be 1 to {limit} characters; put detail in a file and name its path"
+    if any(ord(c) < 32 for c in text):
+        return f"{what} must be one line, without control characters"
     return None
 
 
-def log(a):
-    error = validate(a)
-    if error:
-        print(f"room log: {error}", file=sys.stderr)
-        return 2
-    path = os.path.join(a.dir, "events.jsonl")
+def append(path, fields):
+    """Append one JSON line with the next sequence id, under a lock. Returns the line."""
     with open(path, "a+", encoding="utf-8") as f:
         # Counting lines under the lock keeps ids sequential across writers. O(n) per append, fine
         # into the tens of thousands of lines; keep a last-id file if a run ever gets that big.
         fcntl.flock(f, fcntl.LOCK_EX)
         f.seek(0)
-        event = {
-            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "id": sum(1 for _ in f) + 1,
-            "ticket": a.ticket,
-            "role": a.role,
-            "type": a.type,
-            "sha": a.sha,
-            "note": a.note.strip(),
-        }
-        line = json.dumps(event, ensure_ascii=False)
+        line = json.dumps({"ts": now(), "id": sum(1 for _ in f) + 1, **fields}, ensure_ascii=False)
         f.write(line + "\n")
         f.flush()
+    return line
+
+
+def read_jsonl(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return [json.loads(l) for l in f if l.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def event(d, ticket, role, type_, note, sha=None, **extra):
+    return append(os.path.join(d, "events.jsonl"),
+                  {"ticket": ticket, "role": role, "type": type_, "sha": sha, "note": note.strip(), **extra})
+
+
+def fail(cmd, error, code=2):
+    print(f"room {cmd}: {error}", file=sys.stderr)
+    return code
+
+
+def common(a):
+    if not os.path.isdir(a.dir):
+        return f"--dir {a.dir} is not a directory"
+    if not NAME.match(a.ticket):
+        return f"--ticket {a.ticket!r} must be letters, digits, '.', '_' or '-'"
+    return None
+
+
+def log(a):
+    error = common(a)
+    if not error and not NAME.match(a.role):
+        error = f"--role {a.role!r} must be letters, digits, '.', '_' or '-'"
+    if not error and a.sha is not None and not SHA.match(a.sha):
+        error = f"--sha {a.sha!r} must be 7 to 40 lowercase hex characters"
+    error = error or one_line(a.note, "--note")
+    note = a.note.strip()
+    if not error and a.type == "state" and not any(note == s or note.startswith(s + " ") for s in STATES):
+        error = f"a state note must start with one of: {', '.join(STATES)}"
+    if error:
+        return fail("log", error)
+    print(event(a.dir, a.ticket, a.role, a.type, note, a.sha))
+    return 0
+
+
+def ask(a):
+    error = common(a) or one_line(a.header, "--header", 12) or one_line(a.question, "--question")
+    if not error and not 2 <= len(a.option or []) <= 4:
+        error = "give 2 to 4 --option LABEL DESCRIPTION pairs, the recommended one first"
+    for label, desc in a.option or []:
+        error = error or one_line(label, "an option label", 60) or one_line(desc, "an option description", 200)
+    if error:
+        return fail("ask", error)
+    shape = {"header": a.header.strip(), "question": a.question.strip(),
+             "options": [{"label": l.strip(), "description": d.strip()} for l, d in a.option],
+             "multiSelect": a.multi}
+    print(event(a.dir, a.ticket, "orchestrator", "question", a.question, ask=shape))
+    return 0
+
+
+def signoff(a):
+    error = common(a) or one_line(a.answer, "--answer") or one_line(a.quote, "--quote", 2000)
+    if not error and (a.gate and (a.question or a.change) or not (a.gate or a.question or a.change)):
+        error = "give --gate alone, or --question and/or --change"
+    if not error and a.question is not None and not a.question.isdigit():
+        error = "--question is the question event's id"
+    if not error and a.change is not None and not (
+            a.change == "requirements.md" or re.match(r"^openspec/changes/[\w.-]+$", a.change)):
+        error = "--change is requirements.md or openspec/changes/<name>"
+    if error:
+        return fail("signoff", error)
+    what = {k: v for k, v in (("gate", a.gate), ("question", a.question and int(a.question)), ("change", a.change)) if v}
+    line = append(os.path.join(a.dir, "signoffs.jsonl"),
+                  {"ticket": a.ticket, **what, "answer": a.answer.strip(), "quote": a.quote.strip()})
+    # The answer event wakes the orchestrator's monitor and closes the question on the board.
+    label = f"re {a.question}" if a.question else f"signoff {a.gate or a.change}"
+    event(a.dir, a.ticket, "orchestrator", "answer", f"{label}: {a.answer.strip()}"[:MAX_NOTE])
     print(line)
+    return 0
+
+
+def load_tickets(d):
+    """Return (doc, error). Checks ids, states, references and field names, so typos fail loudly."""
+    try:
+        with open(os.path.join(d, "tickets.json"), encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError) as e:
+        return None, f"cannot read tickets.json: {e}"
+    tickets = doc.get("tickets")
+    if not isinstance(tickets, list):
+        return None, "tickets.json needs a \"tickets\" list"
+    ids = [t.get("id") for t in tickets]
+    for t in tickets:
+        if not NAME.match(str(t.get("id"))):
+            return None, f"ticket id {t.get('id')!r} must be letters, digits, '.', '_' or '-'"
+        if set(t) - set(FIELDS):
+            return None, f"{t['id']}: unknown fields {sorted(set(t) - set(FIELDS))}"
+        if t.get("state") not in STATES or not t.get("title"):
+            return None, f"{t['id']}: needs a title and a state, one of {', '.join(STATES)}"
+        refs = (t.get("after") or []) + ([t["stacksOn"]] if t.get("stacksOn") else [])
+        if any(r not in ids for r in refs):
+            return None, f"{t['id']}: after/stacksOn names an unknown ticket"
+        if set(t.get("gates") or {}) - set(GATES):
+            return None, f"{t['id']}: unknown gates {sorted(set(t['gates']) - set(GATES))}"
+    if len(set(ids)) != len(ids):
+        return None, "ticket ids must be unique"
+    return doc, None
+
+
+def signed(signoffs, gate, ticket):
+    # Run-wide gates (requirements, split, spec) may be signed for "all"; complexity is per ticket.
+    names = (ticket,) if gate == "complexity" else (ticket, "all")
+    return any(s.get("gate") == gate and s.get("ticket") in names for s in signoffs)
+
+
+def missing_gates(t, signoffs):
+    need = ["requirements", "split"]
+    if (t.get("gates") or {}).get("spec", "none") != "none":
+        need.append("spec")
+    if t["state"] in ("COMPLEXITY REVIEW", "DONE", "MERGED"):
+        need.append("complexity")
+    return [g for g in need if not signed(signoffs, g, t["id"])]
+
+
+def start(a):
+    doc, error = load_tickets(a.dir)
+    if error:
+        return fail("start", error)
+    t = next((t for t in doc["tickets"] if t["id"] == a.ticket), None)
+    if t is None:
+        return fail("start", f"no ticket {a.ticket!r} in tickets.json")
+    missing = missing_gates(t, read_jsonl(os.path.join(a.dir, "signoffs.jsonl")))
+    if missing:
+        return fail("start", f"{a.ticket} has no sign-off in signoffs.jsonl for: {', '.join(missing)}. "
+                             "Ask Joey, record his answer with `room signoff`, then retry.", 1)
+    by_id = {x["id"]: x for x in doc["tickets"]}
+    base = by_id[t["stacksOn"]].get("branch") if t.get("stacksOn") else "staging"
+    slug = doc.get("slug") or os.path.basename(os.path.abspath(a.dir))
+    print(json.dumps({"start": f"{slug}-{t['id']}", "ticket": t["id"], "title": t["title"],
+                      "worktree": t.get("worktree"), "branch": t.get("branch"), "base": base,
+                      "stateDir": os.path.abspath(a.dir), "room": os.path.join(os.path.abspath(a.dir), "room"),
+                      "needs": t.get("needs") or []}, indent=2))
+    return 0
+
+
+def tree_lines(tickets):
+    by_parent = {}
+    for t in tickets:
+        by_parent.setdefault(t.get("stacksOn"), []).append(t)
+    rows = []
+
+    def walk(parent, prefix):
+        kids = by_parent.get(parent, [])
+        for i, t in enumerate(kids):
+            last = i == len(kids) - 1
+            label = (f"#{t['pr']}  " if t.get("pr") else "") + t["title"]
+            rows.append((prefix + ("└─ " if last else "├─ "), label, t))
+            walk(t["id"], prefix + ("   " if last else "│  "))
+
+    walk(None, "")
+    width = max((len(p) + len(l) for p, l, _ in rows), default=0) + 2
+    lines = ["staging"]
+    for prefix, label, t in rows:
+        head = t["state"] + (f" {t['note']}" if t.get("note") else "")
+        if t["state"] == "NOT STARTED" and not t.get("note"):
+            waits = [x for x in [t.get("stacksOn")] + (t.get("after") or []) if x]
+            head += f" (needs {', '.join(dict.fromkeys(waits))})" if waits else ""
+        status = ", ".join([head] + ([f"CI {t['ci']}"] if t.get("ci") else []))
+        after = [x for x in t.get("after") or [] if x != t.get("stacksOn")]
+        tail = [f"after: {', '.join(after)}"] if after and t["state"] != "NOT STARTED" else []
+        tail += [t["sha"]] if t.get("sha") else []
+        lines.append((prefix + label).ljust(width) + "".join([status] + [f". {x}" for x in tail]))
+    return lines
+
+
+def open_questions(events):
+    answered = {m.group(1) for e in events if e.get("type") == "answer"
+                for m in [re.match(r"re (\d+):", e.get("note", ""))] if m}
+    return [f"- Q{e['id']} ({e['ticket']}): {e['note']}" for e in events
+            if e.get("type") == "question" and str(e["id"]) not in answered]
+
+
+def render(a):
+    doc, error = load_tickets(a.dir)
+    if error:
+        return fail("render", error)
+    signoffs = read_jsonl(os.path.join(a.dir, "signoffs.jsonl"))
+    unsigned = [t["id"] for t in doc["tickets"]
+                if t["state"] in ("DONE", "MERGED") and not signed(signoffs, "complexity", t["id"])]
+    if unsigned:
+        return fail("render", f"DONE needs Joey's complexity sign-off first: {', '.join(unsigned)}", 1)
+    slug = doc.get("slug") or os.path.basename(os.path.abspath(a.dir))
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    probes = [f"- {t['id']}: {t['title']}" for t in doc["tickets"] if t["state"] == "PROBE"] or ["- none"]
+    text = "\n".join([
+        f"# {slug}: progress", "",
+        *(doc.get("frame") or []), *([""] if doc.get("frame") else []),
+        f"## State board (kept current by \"{doc.get('orchestrator', 'orchestrator')}\"; last updated {stamp})", "",
+        "Only the orchestrator edits this file, by rendering it from tickets.json with `room render`. Workers "
+        "report with `room log` to `events.jsonl` in this dir; the orchestrator wakes on that file.", "",
+        "Dependency tree (an arrow means \"stacks on, merges after\"; \"after:\" names a slice it waits on "
+        "without stacking):", "",
+        "```", *tree_lines(doc["tickets"]), "```", "",
+        "Probes and leftovers (never merge):", *probes, "",
+        "Open questions for Joey:", *open_questions(read_jsonl(os.path.join(a.dir, "events.jsonl"))), "",
+    ])
+    path = os.path.join(a.dir, "progress.md")
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(path + ".tmp", path)
+    print(path)
     return 0
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="room")
     sub = p.add_subparsers(dest="cmd", required=True)
-    lp = sub.add_parser("log", help="append one event to <dir>/events.jsonl")
-    lp.add_argument("--dir", required=True, help="absolute path of the run's state dir")
-    lp.add_argument("--ticket", required=True, help="slice or ticket id, e.g. slice2")
+
+    def cmd(name, help_, ticket=True):
+        sp = sub.add_parser(name, help=help_)
+        sp.add_argument("--dir", required=True, help="absolute path of the run's state dir")
+        if ticket:
+            sp.add_argument("--ticket", required=True, help="slice or ticket id, e.g. slice2; `all` for run-wide")
+        return sp
+
+    lp = cmd("log", "append one event to <dir>/events.jsonl")
     lp.add_argument("--role", required=True, help="e.g. build, ci, orchestrator")
     lp.add_argument("--type", required=True, choices=TYPES)
     lp.add_argument("--sha", help="head SHA, when there is one")
     lp.add_argument("--note", required=True, help="one line; a state note starts with the state")
+
+    ap = cmd("ask", "append a question event shaped like AskUserQuestion")
+    ap.add_argument("--header", required=True, help="chip label, at most 12 characters")
+    ap.add_argument("--question", required=True)
+    ap.add_argument("--option", nargs=2, action="append", metavar=("LABEL", "DESCRIPTION"),
+                    help="2 to 4, the recommended one first")
+    ap.add_argument("--multi", action="store_true", help="allow more than one option")
+
+    sp = cmd("signoff", "record Joey's answer or sign-off in <dir>/signoffs.jsonl")
+    sp.add_argument("--gate", choices=GATES)
+    sp.add_argument("--question", help="id of the question event answered")
+    sp.add_argument("--change", help="requirements.md or openspec/changes/<name>: lets that file change; "
+                                     "alone or with --question")
+    sp.add_argument("--answer", required=True, help="the option Joey picked, or a one-line summary")
+    sp.add_argument("--quote", required=True, help="Joey's words, verbatim")
+
+    stp = cmd("start", "check a ticket's human gates, then print what to start", ticket=False)
+    stp.add_argument("ticket")
+    cmd("render", "write progress.md from tickets.json", ticket=False)
+
     a = p.parse_args(argv)
-    return log(a)
+    return {"log": log, "ask": ask, "signoff": signoff, "start": start, "render": render}[a.cmd](a)
 
 
 if __name__ == "__main__":
