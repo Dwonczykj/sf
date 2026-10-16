@@ -1,6 +1,6 @@
 export const meta = {
   name: 'sf-build-verify',
-  description: 'Deterministic Phase 3 machine: per-slice plan-review -> build+tests -> capped build/verify loop, cross-vendor (Codex+GLM+Cursor), stops at RELEASE (never pushes).',
+  description: 'Deterministic Phase 3 machine: per-slice plan-review -> build+tests -> capped build/verify loop on the three-seat review panel, stops at RELEASE (never pushes).',
   whenToUse: 'After the plan/split are signed off (sf:plan done). Runs one wave of independent slices to pre-PR RELEASE. Push + CI stay in the interactive session.',
   phases: [
     { title: 'Plan review' },
@@ -20,6 +20,9 @@ export const meta = {
 //       { slug, worktree, pkg, base, planReview? }   // one WAVE of independent slices only;
 //                                        // planReview = the width-questions halt's planReview, on re-invoke
 //     ],
+//     seats: [ { seat, vendor, model, command, fallback } x3 ],  // review-seat's
+//                                        // seats.py output; the script can't run it
+//     singleVendor?: false,              // seats.py's flag, echoed in the result
 //     maxRounds?: 4,                     // build<->verify cap per slice
 //     widthAnswered?: false             // set true on re-invoke, AFTER the
 //   }                                    // interactive lead has answered the
@@ -43,21 +46,28 @@ export const meta = {
 if (!args || !args.pluginRoot) {
   throw new Error('args.pluginRoot is required (pass ${CLAUDE_PLUGIN_ROOT} from the calling command) -- the script has no filesystem access to find its own bundled skills otherwise.')
 }
+if (!Array.isArray(args.seats) || args.seats.length !== 3) {
+  throw new Error('args.seats is required: the three seats printed by skills/review-seat/scripts/seats.py, run by the calling command.')
+}
+const SEATS = args.seats
+const LEAD_SEAT = SEATS.filter((s) => s.seat === 1)
+const seatLabel = (s) => `seat${s.seat}-${s.vendor === 'claude' ? s.model : s.vendor}`
+const FALLBACKS = new Set(SEATS.filter((s) => s.fallback).map((s) => `${seatLabel(s)}: ${s.fallback}`))
 
 const MAX_ROUNDS = (args && args.maxRounds) || 2
 const WIDTH_ANSWERED = !!(args && args.widthAnswered)
 const SLICES = (args && args.slices) || []
 // Per-role models. The build agent does the real work and defaults to Opus; the
-// plan-review and verify agents are thin drivers that only shell out to the real
-// vendors (Codex/cursorAgent/Cursor) and parse the result, so they default cheap — that's
+// plan-review and verify agents are thin drivers that only shell out to the review
+// seats' vendors and parse the result, so they default cheap — that's
 // ~12 agents a run that don't need Opus. Resolve each role from args.models.<role>,
 // falling back to a blanket args.model (sf:build-verify's --model), then the default.
 // The caller (sf:build-verify) fills args.models from ~/.claude/sf-models.json + flags.
 const DEFAULT_MODELS = {
-  planReview: 'claude-sonnet-5',
+  planReview: 'claude-sonnet-5-5',
   build: 'claude-opus-5-5',
-  tests: 'claude-sonnet-5',
-  verify: 'claude-sonnet-5',
+  tests: 'claude-sonnet-5-5',
+  verify: 'claude-sonnet-5-5',
 }
 const BLANKET_MODEL = args && args.model
 const pickModel = (role) =>
@@ -79,12 +89,6 @@ if (!['anthropic', 'codex', 'cursor'].includes(PROVIDER)) {
   throw new Error(`provider must be anthropic|codex|cursor (got '${PROVIDER}')`)
 }
 
-const VENDORS = [
-  { id: 'codex', label: 'codex' },
-  { id: 'cursorAgent', label: 'cursorAgent' },
-  { id: 'cursor', label: 'cursor' },
-]
-
 const PLAN_REVIEW_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -105,6 +109,7 @@ const PLAN_REVIEW_SCHEMA = {
         },
       },
     },
+    fellBack: { type: 'string' }, // set only when the seat's vendor failed and the driver reviewed instead
     widthQuestions: {
       type: 'array', // solve-in-worktrees Phase 2b finding 7 -- empty is the normal answer
       items: {
@@ -142,6 +147,7 @@ const VERIFY_SCHEMA = {
         },
       },
     },
+    fellBack: { type: 'string' },
   },
 }
 
@@ -180,43 +186,24 @@ const TEST_REQS_SCHEMA = {
   },
 }
 
-// How a Claude driver agent invokes each external vendor. The driver is thin:
-// run the command, capture the vendor's verdict + findings, return the schema.
-// The reasoning is the vendor's; the driver only parses. Cross-vendor diversity
-// (different model families, not three Claude agents) is the point of the panel.
-//
-// Cost: the cursorAgent and cursor seats bill Cursor (usage-based overage); codex is on the
-// flat ChatGPT/Codex sub. So the seats default to Cursor's cheaper tiers — the cursorAgent seat
-// to GLM 5.2, the cursor seat to gpt-5.3-codex-high (coding-tuned, far below opus-5). Override
-// per run via args.reviewModels.{cursorAgent,cursor}. NOTE: with the cursor seat on a GPT model,
-// codex + cursor are both GPT-family until the Claude seat moves to the Anthropic plan
-// (planned follow-up) — set reviewModels.cursor to claude-sonnet-5-high to keep Claude in.
-const DEFAULT_REVIEW_MODELS = { cursorAgent: 'glm-5.2-high', cursor: 'gpt-5.3-codex-high' }
-const REVIEW_MODELS = { ...DEFAULT_REVIEW_MODELS, ...((args && args.reviewModels) || {}) }
-function vendorCommand(vendor, cwd) {
-  if (vendor === 'codex') {
-    return `Run in Bash (heredoc the prompt, do not interpolate): node ${args.pluginRoot}/skills/codex-agent/scripts/run-agent.mjs --sandbox read-only --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
-  }
-  if (vendor === 'cursorAgent') {
-    // GLM routed through cursor-agent, same wrapper shape as the cursor seat.
-    return `Run in Bash (heredoc the prompt, do not interpolate): node ${args.pluginRoot}/skills/cursor-agent/scripts/run-agent.mjs --model ${REVIEW_MODELS.cursorAgent} --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
-  }
-  // cursor
-  return `Run in Bash (heredoc the prompt, do not interpolate): node ${args.pluginRoot}/skills/cursor-agent/scripts/run-agent.mjs --model ${REVIEW_MODELS.cursor} --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
-}
-
-function driverPrompt({ vendor, cwd, reviewPrompt, schemaNote }) {
+// A seat with a command is run by a thin Claude driver that only shells out and parses; the
+// vendor does the reasoning. A Claude seat (command null) is the reviewer itself, on its own
+// model. Which vendor sits where, and the run-time fallback, are review-seat's (seats.py).
+function driverPrompt({ seat, cwd, reviewPrompt, schemaNote, driverModel }) {
   return [
-    `You are a thin driver for an external review model. Do NOT review anything yourself.`,
-    `Invoke the vendor exactly as follows, passing it the REVIEW_PROMPT verbatim:`,
+    `You are a thin driver for review seat ${seat.seat} (${seat.vendor}). Do NOT review anything yourself unless the fallback rule below says so.`,
+    `Run the seat as ${args.pluginRoot}/skills/review-seat/SKILL.md sections 2 and 3 describe: in Bash, heredoc the REVIEW_PROMPT (with that skill's read-only fence appended) into this command, without interpolating it:`,
     ``,
-    vendorCommand(vendor, cwd),
+    `${seat.command.split('{cwd}').join(cwd)}  <<'EOF'`,
+    `<REVIEW_PROMPT>`,
+    `EOF`,
     ``,
     `REVIEW_PROMPT:`,
     reviewPrompt,
     ``,
     `Capture the vendor's full output. Parse its single verdict line and its numbered findings into the structured output. ${schemaNote}`,
-    `If the vendor errored or produced no verdict, return the most conservative verdict (a CHANGES/PLAN CHANGES with a single finding naming the failure) so the loop does not release on a missing signal.`,
+    `Fallback: if the command fails with command-not-found, an auth or login error, or empty output, do the review yourself and set fellBack to "${seat.vendor}: <the error>, reviewed by ${driverModel}".`,
+    `Any other failure (timeout, crash, no verdict): return the most conservative verdict (CHANGES REQUIRED / PLAN CHANGES with a single finding naming the failure) so the loop does not release on a missing signal.`,
   ].join('\n')
 }
 
@@ -253,18 +240,29 @@ function quorumFindings(perVendorFindings) {
   return { quorum, single }
 }
 
-async function runVendorReview({ vendor, cwd, reviewPrompt, schema, phase, label, model }) {
+async function runSeatReview({ seat, cwd, reviewPrompt, schema, phase, label, model }) {
   const schemaNote =
     schema === PLAN_REVIEW_SCHEMA
       ? 'Return verdict (PLAN OK|PLAN CHANGES), planFindings, and widthQuestions.'
       : 'Return pass, verdict (RELEASE|CHANGES REQUIRED), and findings with P0/P1/P2 severities.'
-  return agent(driverPrompt({ vendor, cwd, reviewPrompt, schemaNote }), {
-    schema,
-    phase,
-    label,
-    model, // MODELS.planReview / MODELS.verify — the driver only parses; the vendor does the thinking
-    effort: 'low',
-  })
+  const result = seat.command
+    ? await agent(driverPrompt({ seat, cwd, reviewPrompt, schemaNote, driverModel: model }), {
+        schema,
+        phase,
+        label,
+        model, // MODELS.planReview / MODELS.verify — the driver only parses; the vendor does the thinking
+        effort: 'low',
+      })
+    : await agent(
+        [
+          `You are review seat ${seat.seat}. Work in ${cwd}. Review only: edit, create or delete no file, and run no build, test, typecheck or lint command.`,
+          reviewPrompt,
+          schemaNote,
+        ].join('\n'),
+        { schema, phase, label, model: seat.model },
+      )
+  if (result && result.fellBack) FALLBACKS.add(`${seatLabel(seat)}: ${result.fellBack}`)
+  return result
 }
 
 // --- worker routing (build + test agents) -----------------------------------
@@ -334,14 +332,14 @@ async function planReview(slice) {
   ].join('\n')
 
   const reviews = await parallel(
-    VENDORS.map((v) => () =>
-      runVendorReview({
-        vendor: v.id,
+    SEATS.map((seat) => () =>
+      runSeatReview({
+        seat,
         cwd: slice.worktree,
         reviewPrompt,
         schema: PLAN_REVIEW_SCHEMA,
         phase: 'Plan review',
-        label: `plan:${slice.slug}:${v.label}`,
+        label: `plan:${slice.slug}:${seatLabel(seat)}`,
         model: MODELS.planReview,
       }),
     ),
@@ -462,14 +460,14 @@ async function buildRound(slice, round, priorFindings) {
 }
 
 // --- Phase 4: verify -------------------------------------------------------
-// Round 1 runs the full panel (3 passes x every vendor = 9 calls). Re-verify rounds
-// (round > 1) run Codex ONLY — it's on the flat sub, so re-checking a fix costs nothing
-// on Cursor — and the prompt targets the prior P0s ("confirm each is resolved"), so one
-// trusted reviewer confirming the specific fixes replaces the 9-call panel. That's most of
-// the Cursor spend, since the loop rounds are where it multiplies.
+// Round 1 runs the full panel (3 passes x 3 seats = 9 calls). Re-verify rounds (round > 1)
+// run the lead seat ONLY (Codex where installed, on the flat sub, so re-checking a fix costs
+// nothing on Cursor), and the prompt targets the prior P0s ("confirm each is resolved"), so
+// one trusted reviewer confirming the specific fixes replaces the 9-call panel. That's most
+// of the Cursor spend, since the loop rounds are where it multiplies.
 async function verifyRound(slice, round, priorFindings = []) {
-  const vendors = round === 1 ? VENDORS : VENDORS.filter((v) => v.id === 'codex')
-  const solo = vendors.length === 1
+  const seats = round === 1 ? SEATS : LEAD_SEAT
+  const solo = seats.length === 1
   const targeted = solo
     ? `\nThis is a re-check: confirm each of these prior P0s is now resolved in the diff, and flag any regression. Prior P0s:\n${priorFindings
         .map((f, i) => `${i + 1}. ${f.fileLine || ''} ${f.text}`)
@@ -492,9 +490,9 @@ async function verifyRound(slice, round, priorFindings = []) {
 
   const results = await parallel(
     passes.flatMap((p) =>
-      vendors.map((v) => () =>
-        runVendorReview({
-          vendor: v.id,
+      seats.map((seat) => () =>
+        runSeatReview({
+          seat,
           cwd: slice.worktree,
           reviewPrompt: [
             `Read and perform EXACTLY this review, write no files, end with one verdict line RELEASE or CHANGES REQUIRED and a numbered findings list:`,
@@ -507,7 +505,7 @@ async function verifyRound(slice, round, priorFindings = []) {
             .join('\n'),
           schema: VERIFY_SCHEMA,
           phase: 'Verify',
-          label: `verify:${p.pass}:${slice.slug}:${v.label}:r${round}`,
+          label: `verify:${p.pass}:${slice.slug}:${seatLabel(seat)}:r${round}`,
           model: MODELS.verify,
         }),
       ),
@@ -515,7 +513,7 @@ async function verifyRound(slice, round, priorFindings = []) {
   )
   const ok = results.filter(Boolean)
 
-  // Any P0 blocks, even from one vendor: vendors word the same P0 differently, so a
+  // Any P0 blocks, even from one seat: vendors word the same P0 differently, so a
   // quorum on P0 text let "requirement not met" slip through. Only sub-P0 single-vendor
   // findings go to needsHumanCheck. A seat that returned nothing also blocks.
   const byPass = { A: [], B: [], C: [] }
@@ -528,7 +526,7 @@ async function verifyRound(slice, round, priorFindings = []) {
   for (const pass of ['A', 'B', 'C']) {
     const { quorum, single } = quorumFindings(byPass[pass])
     blocking = blocking.concat([...quorum, ...single].filter((f) => f.severity === 'P0'))
-    // On a codex-only re-check, lower severities are noise, not surfaced.
+    // On a lead-seat re-check, lower severities are noise, not surfaced.
     if (!solo) for (const f of single) if (f.severity !== 'P0') needsHumanCheck.push({ ...f, pass })
   }
   const released = blocking.length === 0
@@ -589,12 +587,15 @@ async function runSlice(slice) {
 // --- entry ------------------------------------------------------------------
 if (!SLICES.length) {
   log('no slices in args.slices -- nothing to do')
-  return { slices: [] }
+  return { slices: [], panel: { seats: SEATS.map(seatLabel), singleVendor: !!args.singleVendor, fallbacks: [...FALLBACKS] } }
 }
 log(
   `sf build/verify: ${SLICES.length} slice(s), maxRounds=${MAX_ROUNDS}, widthAnswered=${WIDTH_ANSWERED}, provider=${PROVIDER}, ` +
     `models={plan:${MODELS.planReview}, build:${MODELS.build}, tests:${MODELS.tests}, verify:${MODELS.verify}}, ` +
-    `reviewSeats={cursorAgent:${REVIEW_MODELS.cursorAgent}, cursor:${REVIEW_MODELS.cursor}} (round>1 = codex-only re-check)`,
+    `seats={${SEATS.map(seatLabel).join(', ')}}${args.singleVendor ? ' (single-vendor)' : ''} (round>1 = lead-seat re-check)`,
 )
 const results = await parallel(SLICES.map((s) => () => runSlice(s)))
-return { slices: results.filter(Boolean) }
+return {
+  slices: results.filter(Boolean),
+  panel: { seats: SEATS.map(seatLabel), singleVendor: !!args.singleVendor, fallbacks: [...FALLBACKS] },
+}

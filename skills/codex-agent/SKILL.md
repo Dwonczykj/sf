@@ -1,6 +1,6 @@
 ---
 name: codex-agent
-description: Spawn an OpenAI Codex CLI agent (the `codex` binary, run headless via `codex exec`) with arbitrary instructions, optionally pinning a model and reasoning effort. Backed by the codex CLI directly — no codex MCP registration or plugin needed. Trigger on "ask codex to...", "spawn a codex agent", "get the codex cli to...", "use codex-agent for a second opinion", or as a review-panel seat alongside cursor-agent/gemini-agent.
+description: Spawn an OpenAI Codex CLI agent (the `codex` binary, run headless via `codex exec`) with arbitrary instructions, optionally pinning a model and reasoning effort. Backed by the codex CLI directly — no codex MCP registration or plugin needed. Trigger on "ask codex to...", "spawn a codex agent", "get the codex cli to...", "use codex-agent for a second opinion", or as an adapter behind sf's review-seat (callers in sf go through review-seat, never here directly).
 ---
 
 # codex-agent

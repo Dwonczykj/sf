@@ -1,6 +1,6 @@
 ---
 name: review-feature
-description: Drive an already-built change from "code exists" to "green and releasable" — a build↔verify loop that gates the branch before the PR opens (via pre-pr-gate, three passes reviewed by Codex, Gemini, and Cursor), then keeps looping on CI checks and review-bot comments (via fix-bot-comments) until checks pass and every thread is resolved. Takes a worktree/branch, or an already-open PR number/URL. Use when the user says "review this feature", "/review-feature", "loop on this until it's green", "get this PR releasable", or as the review phase of /start-feature and solve-in-worktrees. Never opens the PR itself.
+description: Drive an already-built change from "code exists" to "green and releasable" — a build↔verify loop that gates the branch before the PR opens (via pre-pr-gate, three passes reviewed by the three-seat review panel), then keeps looping on CI checks and review-bot comments (via fix-bot-comments) until checks pass and every thread is resolved. Takes a worktree/branch, or an already-open PR number/URL. Use when the user says "review this feature", "/review-feature", "loop on this until it's green", "get this PR releasable", or as the review phase of /start-feature and solve-in-worktrees. Never opens the PR itself.
 user_invocable: true
 ---
 
@@ -11,7 +11,7 @@ until it is releasable. Two stages, same loop shape — verify, hand the real fi
 whoever can fix them, re-verify.
 
 **This skill owns the loop, not the checks.** `pre-pr-gate` owns the pre-PR gate
-(code gates, comments review, `diff-review`, the three verify passes run by Codex, Gemini, and Cursor) and
+(code gates, comments review, `diff-review`, the three verify passes run by the `review-seat` panel) and
 `fix-bot-comments` owns bot-claim triage. Don't restate either here; invoke them.
 
 ## Inputs
@@ -36,7 +36,7 @@ Resolve the target and the contract before looping.
 ## Stage 1 — Gate the branch (pre-PR)
 
 Run **`/pre-pr-gate`** on the target with the contract. It loops
-checks → 3 passes × 3 models (Codex + Gemini + Cursor, 9 concurrent) → reconcile → fix →
+checks → 3 passes × 3 seats (9 concurrent) → reconcile → fix →
 re-check, capped at 4 rounds, and emits either a readiness report or a list of what's
 contested.
 
@@ -47,7 +47,7 @@ than their absence. Note the weaker oracle and say so in the report: on a branch
 already exists, T1 has only the diff feed, so its tests are shaped by the implementation
 they check, which is exactly what running them from the plan is meant to avoid.
 
-Never skip or shrink this stage because the PR is already open, CI is green, or a reviewer seat looks down. `pre-pr-gate` includes **Pass D** (a bug hunt copied from `/code-review`, run by `codex-agent`), and `codex-agent` is a CLI wrapper, so the codex MCP server failing to connect does not make Codex unavailable. If a seat truly fails, substitute another and say so in the report.
+Never skip or shrink this stage because the PR is already open, CI is green, or a reviewer seat looks down. `pre-pr-gate` includes **Pass D** (a bug hunt copied from `/code-review`, run on `review-seat`'s lead seat). The Codex seat is a CLI wrapper, so the codex MCP server failing to connect does not make Codex unavailable, and a seat that truly fails falls back to a Claude model, which the report names.
 
 Things this skill adds around it:
 
@@ -111,7 +111,7 @@ infrastructure or a wrong requirement, not code.
 
 ```
 ✅ releasable — <branch> / PR <url>
-- gate: RELEASE (Pass A <n>/<n>, B, C — Codex + Gemini + Cursor)  |  rounds <k>/4
+- gate: RELEASE (Pass A <n>/<n>, B, C — seats <vendors>, fallbacks <none | …>)  |  rounds <k>/4
 - checks: <green | which are queued-by-design>
 - bot threads: <n> real fixed, <n> refuted+answered, all resolved
 - gate misses: <none | "<finding> — Pass C should have caught this; no model raised it">

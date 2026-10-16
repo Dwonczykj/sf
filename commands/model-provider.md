@@ -27,11 +27,13 @@ This is the single source of truth the build/verify skills read (`build`, `solve
 | `codex` | the `codex-agent` skill (`gpt-5.6-sol`, medium) | your OpenAI/ChatGPT Codex subscription |
 | `cursor` | the `cursor-agent` skill (`claude-opus-5-high`) | your Cursor subscription |
 
+If the chosen CLI is missing or logged out when a run starts (`python3 ${CLAUDE_PLUGIN_ROOT}/skills/review-seat/scripts/seats.py probe codex|cursor`), the run uses `anthropic` and says so; it never fails for want of the CLI. On `codex` or `cursor`, run that probe after writing and warn me if it fails.
+
 **Only `anthropic` spends your Claude Code / Anthropic usage** — that's the point of the switch. Set `codex` or `cursor` to keep a factory run going when Anthropic limits are tight, then set it back to `anthropic` for the best quality.
 
 ## What this does NOT change
 
-- **The cross-vendor review panel** (Codex + Gemini-via-Cursor + Cursor, in `pre-pr-gate` / `solve-in-worktrees` verify) stays three independent vendors — that diversity is the whole point of the gate, and each seat already runs on its own vendor subscription, not your Claude Code usage. A worker-provider switch doesn't collapse it.
+- **The review panel** (`review-seat`, used by `pre-pr-gate` / `solve-in-worktrees` verify) keeps its own seats, chosen at `/sf:install`. A worker-provider switch doesn't collapse it.
 - **The deterministic `sf:build-verify` workflow** picks its worker model from its own `--model` arg (default `claude-opus-5-5`), not this file — a workflow script can't read local state. Pass `sf:build-verify ... --model <slug>` there, or use the interactive `sf:build` / `sf:start-feature` path, which does honour this setting.
 
 End by stating the current provider and reminding me I can switch anytime with `/sf:model-provider codex|cursor|anthropic`.

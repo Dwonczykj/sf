@@ -4,7 +4,7 @@ The `start-feature` pipeline as a namespaced set of `sf:` commands, so you can r
 
 ## How `start-feature` works
 
-Idea → open PR through left-shifted, gated phases. Hexagons are **human gates** (hard stops); the per-slice build↔verify loop and the CI loop are the two cycles. State is markdown in `.scratch/<slug>/`; gates are real tool calls (Codex verdict, lint, jest), not self-assessment.
+Idea → open PR through left-shifted, gated phases. Hexagons are **human gates** (hard stops); the per-slice build↔verify loop and the CI loop are the two cycles. State is markdown in `.scratch/<slug>/`; gates are real tool calls (review-panel verdict, lint, jest), not self-assessment.
 
 ```mermaid
 flowchart TD
@@ -21,7 +21,7 @@ flowchart TD
 
     subgraph SLICE ["Per slice — independent leaves in parallel"]
         direction TB
-        K["Worktree off origin/staging"] --> L["Plan review — Codex + Gemini + Cursor"]
+        K["Worktree off origin/staging"] --> L["Plan review — 3-seat panel"]
         L --> M{{"🔒 PLAN OK (3 models)"}}
         M --> N["Build agent ∥ 3 test agents (tests-first)"]
         N --> O["Verify — 3 passes × 3 models"]
@@ -45,7 +45,7 @@ All commands share one state contract: `.scratch/<slug>/` holding `progress.md` 
 
 | Command | Does |
 |---|---|
-| `sf:install` | Check (and help fix) the external deps the factory needs: Cursor CLI, Codex CLI (the `codex` MCP is optional — `codex-agent` uses the CLI directly), the OpenSpec CLI (optional Phase 2.5 spec step), the Qodo CLI (optional `pre-pr-gate` Pass E), then prompt for the `branchPrefix` config. Run this once per machine before the rest. |
+| `sf:install` | Ask which reviewers (Claude Code, Codex, Cursor, Gemini), data CLI (gcloud), sheet CLI (gws) and UI checker (Claude in Chrome, the browser pane, Playwright) you use, check each is installed and logged in, and write `~/.claude/sf-tools.json`; then the OpenSpec CLI (optional Phase 2.5 spec step), the Qodo CLI (optional `pre-pr-gate` Pass E), and the plugin settings. Run this once per machine before the rest. |
 | `sf:reload [plugin\|plugin@marketplace]` | Sync the installed plugin cache from its local marketplace source (default: `sf` itself) via `claude plugin update`, then tell you to restart to pick it up. Run after editing a command in `commands/`. |
 | `sf:start-feature <idea\|PRE-####>` | Full pipeline, idea → open PR. Delegates to the `start-feature` skill. |
 | `sf:investigate <report>` | Start from a reported bug instead of a feature idea: grill, root-cause, problems + requirements, decide on a spec, then run the factory from Phase 2 onward. |
@@ -53,13 +53,13 @@ All commands share one state contract: `.scratch/<slug>/` holding `progress.md` 
 | `sf:orchestrate [slug] [--adopt]` | Run a split of more than two slices as parallel worker sessions behind one state board; `--adopt` takes over a build already under way. |
 | `sf:plan [idea\|PRE-####]` | Phases 0–2 only: frame, scope + lock `requirements.md`, split. Stops at split approval. |
 | `sf:build [slug\|slice]` | Worktree + 3-model plan review + build + tests for a slice, as prose (model-driven). Commits locally, no push. |
-| `sf:build-verify [slug]` | Same Phase 3 machine as a **deterministic Workflow**: schema'd `PLAN OK`/`RELEASE` verdicts, cross-vendor (Codex+Gemini+Cursor) `parallel()` thunks, capped build↔verify loop over a wave of independent slices, to pre-PR RELEASE. Halts back to you for width questions. Never pushes. |
+| `sf:build-verify [slug]` | Same Phase 3 machine as a **deterministic Workflow**: schema'd `PLAN OK`/`RELEASE` verdicts, `parallel()` thunks over the three review seats (resolved by the entry command, since the script has no filesystem access), capped build↔verify loop over a wave of independent slices, to pre-PR RELEASE. Halts back to you for width questions. Never pushes. |
 | `sf:review [branch\|PR\|slug]` | `review-feature`: gate pre-PR (3 models), open PR on RELEASE, loop CI + bots to green. |
 | `sf:ci-green [PR]` | Just the CI/bot loop: `fix-bot-comments` until all checks green + threads resolved, asking before any fix that adds more complexity than the feature warrants. |
-| `sf:fix-pr [PR]` | Same green-gate as `sf:ci-green`, but reviews the diff with Codex + Cursor *before* each push so fewer bot round-trips are needed. |
+| `sf:fix-pr [PR]` | Same green-gate as `sf:ci-green`, but reviews the diff on two review seats *before* each push so fewer bot round-trips are needed. |
 | `sf:view-agents` | Open the local agent-team dashboard (starts its dev server on :7777 first if needed). |
 
-The phase commands delegate to skills bundled with this plugin under `skills/` — `gather-requirements`, `pr-split-audit`, `solve-in-worktrees`, `review-feature`, `pre-pr-gate`, `fix-bot-comments`, `discussion-room`, `create-branch`, `create-pr`, `cursor-agent`, `diff-review`, `commit-hang-guard`, `lint-in-ignored-worktree`, `linear-update-issue-on-pr-merge`, `prune-merged-worktrees`, `setup-worktree-webapp`, `get-worktree`, `repo-instructions`, `steward`, `start-feature` itself. One implementation each, no forks. `grill-me` is the one exception: it's not bundled here because it already ships in the separate `anthropic-skills` plugin, which most installs already have.
+The phase commands delegate to skills bundled with this plugin under `skills/` — `gather-requirements`, `pr-split-audit`, `solve-in-worktrees`, `review-feature`, `pre-pr-gate`, `fix-bot-comments`, `discussion-room`, `create-branch`, `create-pr`, `review-seat` (with its `codex-agent` and `cursor-agent` adapters), `query-data`, `make-sheet`, `check-ui`, `diff-review`, `commit-hang-guard`, `lint-in-ignored-worktree`, `linear-update-issue-on-pr-merge`, `prune-merged-worktrees`, `setup-worktree-webapp`, `get-worktree`, `repo-instructions`, `steward`, `start-feature` itself. One implementation each, no forks. `grill-me` is the one exception: it's not bundled here because it already ships in the separate `anthropic-skills` plugin, which most installs already have.
 
 ### Portability
 
@@ -83,7 +83,7 @@ The one remaining *convention* (not a path, doesn't block install): worktrees ar
 
 `start-feature` line 18 flags its own soft spot: the phase ordering and the 3-model vote are prose the model executes by hand, so it *can* skip ahead. `sf:build-verify` is the "promote the orchestrator to a script" answer to that — the Phase 3 machine (plan-review → build + 3 test agents → 3-pass × 3-model verify → capped build↔verify loop) as `workflows/build-verify-slice.js`, where the verdicts are schema-validated objects, the 2-of-3 reconciliation is real code, the loop cap is a real loop, and an interrupted run resumes via `resumeFromRunId` instead of re-running every verify.
 
-What stays out of the script, on purpose (a Workflow is headless and can't call `AskUserQuestion`): the width-question gate (the script returns the questions and halts the slice), the plan-ambiguity gate, and push + PR + CI. Those are the human seams `start-feature` is built around; `sf:build-verify` runs the deterministic stretch *between* them. Cross-vendor diversity is preserved — each reviewer is the real Codex/Gemini/Cursor invoked from inside a thin Claude driver agent, not three Claude agents.
+What stays out of the script, on purpose (a Workflow is headless and can't call `AskUserQuestion`): the width-question gate (the script returns the questions and halts the slice), the plan-ambiguity gate, and push + PR + CI. Those are the human seams `start-feature` is built around; `sf:build-verify` runs the deterministic stretch *between* them. Cross-vendor diversity is preserved where the vendors are installed: each such seat is the real Codex, Gemini or Cursor invoked from inside a thin Claude driver agent. A seat whose vendor is missing runs on a Claude model no other seat uses, and the result says so.
 
 Use `sf:build` when you want to watch and steer a single slice; use `sf:build-verify` for a wave of independent slices you want run to RELEASE hands-off and resumable.
 
@@ -113,6 +113,19 @@ claude plugin marketplace add Dwonczykj/sf && claude plugin install sf@sf
 Inside Claude Code: `/plugin marketplace add Dwonczykj/sf` then `/plugin install sf@sf`. Then run `/sf:install` once per machine.
 
 This plugin is published to [`Dwonczykj/sf`](https://github.com/Dwonczykj/sf) from `local-plugins/sf/` in the config repo via `git subtree`. Edit here, then publish with `git subtree push --prefix=local-plugins/sf sf-dist main` (remote `sf-dist` → `Dwonczykj/sf`). For local dev against this working tree, point a marketplace at `~/.claude/local-plugins/sf`.
+
+## Tools behind one door each
+
+Each kind of outside tool has one skill that knows the vendors; everything else names the job. `/sf:install` writes the choices to `~/.claude/sf-tools.json`, and each port checks its tool at run time and falls back instead of failing the run:
+
+| Port | Uses | Falls back to |
+|---|---|---|
+| `review-seat` | Codex CLI, Gemini (through Cursor or `agy`), Cursor CLI, Claude Code | a Claude sub-agent on a Claude model no other seat uses; an all-Claude panel is reported as single-vendor |
+| `query-data` | gcloud (Logging, BigQuery) | "not measured" and why, never a guessed number |
+| `make-sheet` | gws | a CSV plus an artifact table |
+| `check-ui` | Claude in Chrome, the built-in browser pane, Playwright MCP | the gate notes that UI was not checked |
+
+Checks: `python3 skills/review-seat/scripts/seats_test.py` and `node scripts/build_verify_slice_test.mjs`.
 
 ## Edit
 
