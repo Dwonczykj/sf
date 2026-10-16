@@ -6,8 +6,8 @@ A room dir is a dir holding events.jsonl. In one:
 - events.jsonl and signoffs.jsonl: nobody edits them; `room log` and `room signoff` append.
 - requirements.md, once Joey has signed off the requirements gate: only while a `--change requirements.md`
   sign-off is newer than SF_SIGNOFF_EDIT_MINUTES (default 60). Same for openspec/changes/<name>/** once
-  the spec gate is signed, with `--change openspec/changes/<name>`, looked up in `.scratch/<name>/` of
-  every worktree of the file's repo.
+  the spec gate is signed, with `--change openspec/changes/<name>`, looked up in ~/FyxerGh/build-room/<name>/
+  and in `.scratch/<name>/` of every worktree of the file's repo.
 - `room signoff` and `room render` run from Bash: orchestrator only.
 
 Bash is best effort. It catches redirects, `tee`, `sed -i`, `cp`, `mv`, `ln`, `install`, `truncate` and
@@ -27,6 +27,7 @@ MARKER = b'"text":"sf-orchestrator: '
 EDIT_MINUTES = int(os.environ.get("SF_SIGNOFF_EDIT_MINUTES", "60"))
 REDIRECT = re.compile(r"\d?>>?\|?\s*([^\s;&|<>]+)")
 SPEC = re.compile(r"(.*?)/openspec/changes/([\w.-]+)(?:/|$)")
+BUILD_ROOM = os.path.expanduser("~/FyxerGh/build-room")
 
 
 def is_orchestrator(transcript):
@@ -97,7 +98,8 @@ def check(path, orchestrator, transcript):
         return locked(signoffs(os.path.join(d, "signoffs.jsonl")), "requirements", "requirements.md")
     m = SPEC.match(path)
     if m:
-        lines = [s for wt in worktrees(path) for s in signoffs(os.path.join(wt, ".scratch", m[2], "signoffs.jsonl"))]
+        dirs = [os.path.join(BUILD_ROOM, m[2])] + [os.path.join(wt, ".scratch", m[2]) for wt in worktrees(path)]
+        lines = [s for d in dirs for s in signoffs(os.path.join(d, "signoffs.jsonl"))]
         return locked(lines, "spec", f"openspec/changes/{m[2]}") if lines else None
     return None
 

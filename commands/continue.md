@@ -3,7 +3,7 @@ description: "Resume the software factory from wherever progress.md left off."
 ---
 Resume the software-factory run.
 
-Locate the feature: if a slug arg is given ($ARGUMENTS) use `.scratch/<slug>/`; else derive `<slug>` from the current git branch and look for `.scratch/<slug>/progress.md`; else use the most-recently-modified `.scratch/*/progress.md`. If none exists, say so and suggest `sf:start-feature`. If it's ambiguous, list the candidate `.scratch/*/` dirs and ask which.
+Locate the feature's state dir. An orchestrated build keeps it in `~/FyxerGh/build-room/<slug>/`; a run before its build, or an orchestrated run started before that move, keeps it in `.scratch/<slug>/` of its checkout. If a slug arg is given ($ARGUMENTS) use `~/FyxerGh/build-room/<slug>/` when it exists, else `.scratch/<slug>/`; else derive `<slug>` from the current git branch and look in the same two places, in that order; else use the most-recently-modified `progress.md` among `~/FyxerGh/build-room/*/` and `.scratch/*/`. If none exists, say so and suggest `sf:start-feature`. If it's ambiguous, list the candidate dirs and ask which.
 
 Read `progress.md` (the phase checklist + last gate outcome) and `requirements.md` (the locked contract). Report in one line: feature, current phase, next pending step.
 

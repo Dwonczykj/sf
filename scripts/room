@@ -3,7 +3,8 @@
 
   log      append one validated event to events.jsonl (every session)
   ask      append a `question` event shaped like AskUserQuestion (orchestrator)
-  signoff  append Joey's answer or gate sign-off to signoffs.jsonl (orchestrator, with Joey's words)
+  signoff  append Joey's answer, gate sign-off or free message to signoffs.jsonl (the room server, or
+           the orchestrator with Joey's words)
   start    refuse to start a ticket whose human gates have no sign-off; else print what to start
   render   write progress.md's board from tickets.json and the open questions in events.jsonl
 
@@ -19,14 +20,14 @@ import re
 import sys
 from datetime import datetime, timezone
 
-TYPES = ("state", "question", "answer", "blocker", "ci", "note")
+TYPES = ("state", "question", "answer", "blocker", "ci", "note", "model")
 # Board states from start-feature's "Board format". A state event's note starts with one of these.
 STATES = ("PROBE", "NOT STARTED", "BUILDING", "WAITING ON JOEY", "LOCAL", "PUSHED", "DRAFT PR", "PR",
           "COMPLEXITY REVIEW", "DONE", "MERGED")
 GATES = ("framed", "requirements", "grilled", "impact", "steward", "split", "spec", "planReview", "gate",
          "ci", "complexity")
 FIELDS = ("id", "title", "kind", "queue", "state", "after", "stacksOn", "worktree", "branch", "pr", "sha",
-          "ci", "session", "needs", "gates", "note")
+          "ci", "session", "needs", "gates", "note", "model", "effort", "complexity", "blast", "budget")
 NAME = re.compile(r"^[A-Za-z0-9][\w.-]{0,63}$")
 SHA = re.compile(r"^[0-9a-f]{7,40}$")
 MAX_NOTE = 500
@@ -88,6 +89,8 @@ def log(a):
     error = common(a)
     if not error and not NAME.match(a.role):
         error = f"--role {a.role!r} must be letters, digits, '.', '_' or '-'"
+    if not error and a.role == "joey":
+        error = "--role joey is reserved for the answer events `room signoff` writes"
     if not error and a.sha is not None and not SHA.match(a.sha):
         error = f"--sha {a.sha!r} must be 7 to 40 lowercase hex characters"
     error = error or one_line(a.note, "--note")
@@ -116,9 +119,13 @@ def ask(a):
 
 
 def signoff(a):
+    if a.message and a.answer is None:
+        a.answer = a.quote[:MAX_NOTE]  # a free message has no options; the quote is the whole of it
     error = common(a) or one_line(a.answer, "--answer") or one_line(a.quote, "--quote", 2000)
-    if not error and (a.gate and (a.question or a.change) or not (a.gate or a.question or a.change)):
-        error = "give --gate alone, or --question and/or --change"
+    if not error and a.message and (a.gate or a.question or a.change):
+        error = "give --message alone"
+    if not error and not a.message and (a.gate and (a.question or a.change) or not (a.gate or a.question or a.change)):
+        error = "give --gate alone, or --question and/or --change, or --message"
     if not error and a.question is not None and not a.question.isdigit():
         error = "--question is the question event's id"
     if not error and a.change is not None and not (
@@ -126,12 +133,14 @@ def signoff(a):
         error = "--change is requirements.md or openspec/changes/<name>"
     if error:
         return fail("signoff", error)
-    what = {k: v for k, v in (("gate", a.gate), ("question", a.question and int(a.question)), ("change", a.change)) if v}
+    what = {k: v for k, v in (("gate", a.gate), ("question", a.question and int(a.question)), ("change", a.change),
+                              ("message", a.message)) if v}
     line = append(os.path.join(a.dir, "signoffs.jsonl"),
                   {"ticket": a.ticket, **what, "answer": a.answer.strip(), "quote": a.quote.strip()})
-    # The answer event wakes the orchestrator's monitor and closes the question on the board.
-    label = f"re {a.question}" if a.question else f"signoff {a.gate or a.change}"
-    event(a.dir, a.ticket, "orchestrator", "answer", f"{label}: {a.answer.strip()}"[:MAX_NOTE])
+    # The answer event wakes the orchestrator's monitor and closes the question on the board. Its role is
+    # joey, never orchestrator, so an orchestrator skipping its own events still wakes on it.
+    label = "message" if a.message else f"re {a.question}" if a.question else f"signoff {a.gate or a.change}"
+    event(a.dir, a.ticket, "joey", "answer", f"{label}: {a.answer.strip()}"[:MAX_NOTE])
     print(line)
     return 0
 
@@ -293,12 +302,13 @@ def main(argv=None):
                     help="2 to 4, the recommended one first")
     ap.add_argument("--multi", action="store_true", help="allow more than one option")
 
-    sp = cmd("signoff", "record Joey's answer or sign-off in <dir>/signoffs.jsonl")
+    sp = cmd("signoff", "record Joey's answer, sign-off or message in <dir>/signoffs.jsonl")
     sp.add_argument("--gate", choices=GATES)
     sp.add_argument("--question", help="id of the question event answered")
     sp.add_argument("--change", help="requirements.md or openspec/changes/<name>: lets that file change; "
                                      "alone or with --question")
-    sp.add_argument("--answer", required=True, help="the option Joey picked, or a one-line summary")
+    sp.add_argument("--message", action="store_true", help="a free message from Joey, tied to no question or gate")
+    sp.add_argument("--answer", help="the option Joey picked, or a one-line summary; optional with --message")
     sp.add_argument("--quote", required=True, help="Joey's words, verbatim")
 
     stp = cmd("start", "check a ticket's human gates, then print what to start", ticket=False)

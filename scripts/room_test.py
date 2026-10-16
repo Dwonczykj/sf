@@ -125,4 +125,17 @@ with tempfile.TemporaryDirectory() as d:
     assert r.returncode == 0, r.stderr
     assert not hook("Edit", {"file_path": reqs}, orch)
 
+with tempfile.TemporaryDirectory() as d:
+    # signoff --message: a free message from Joey, alone; its answer event is role joey, which log refuses.
+    r = run(d, "--ticket", "all", "--message", "--quote", "/sf:ci-green 15061", cmd="signoff")
+    assert r.returncode == 0, r.stderr
+    line = json.loads(r.stdout)
+    assert line["message"] is True and line["quote"] == "/sf:ci-green 15061" and "gate" not in line
+    answer = [json.loads(l) for l in open(os.path.join(d, "events.jsonl"))][-1]
+    assert answer["role"] == "joey" and answer["note"] == "message: /sf:ci-green 15061", answer
+    assert run(d, "--ticket", "all", "--message", "--gate", "split", "--quote", "x", cmd="signoff").returncode != 0
+    assert run(d, "--ticket", "all", "--message", "--quote", "two\nlines", cmd="signoff").returncode != 0
+    assert run(d, "--ticket", "s1", "--role", "joey", "--type", "note", "--note", "it's me").returncode != 0
+    assert run(d, "--ticket", "s1", "--role", "orchestrator", "--type", "model", "--note", "sonnet-5.5 high: CI watch").returncode == 0
+
 print("room_test: ok")

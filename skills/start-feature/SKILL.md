@@ -28,7 +28,7 @@ This is a **thin orchestrator**. It doesn't re-implement any phase — it invoke
   ledger.md          # orchestrated runs: the orchestrator's own notes and its cursor into events.jsonl
 ```
 
-`<slug>` is a kebab feature name (from the Linear code + title if given). Create the dir and an initial `progress.md` before Phase 1. Update `progress.md` at every gate so a resumed session knows where it is.
+`<slug>` is a kebab feature name (from the Linear code + title if given). Create the dir and an initial `progress.md` before Phase 1. When `sf:orchestrate` starts the build, it moves the dir to `~/FyxerGh/build-room/<slug>/`, outside every checkout; `sf:continue` and the progress-tree mod look there first. Update `progress.md` at every gate so a resumed session knows where it is.
 
 ## Phase 0 — Frame
 
