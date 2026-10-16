@@ -24,6 +24,8 @@ This is a **thin orchestrator**. It doesn't re-implement any phase — it invoke
   progress.md        # phase checklist: pending / done, with the gate outcome per phase
   requirements.md    # the locked contract (Phase 1 output) — the acceptance target
   split.md           # the slice plan (Phase 2 output; pr-split-audit also writes ~/.claude/plans/<slug>.md)
+  steward.md         # the steward's shaping report: where it lives, reuse, scores, budget (Phase 1)
+  steward-<slice>.md # the steward's review of each slice's green PR
   events.jsonl       # orchestrated runs: one JSON event per line, appended only through `room log`
   ledger.md          # orchestrated runs: the orchestrator's own notes and its cursor into events.jsonl
 ```
@@ -39,12 +41,13 @@ Restate the feature in one line and derive `<slug>`. If given a bare `PRE-1234`,
 0. **Ask clarifying questions first.** Before any tracing, ask the user whatever you need to understand the ask — use `AskUserQuestion` for the decisions with a small set of answers, plain prose for the open ones. Ask only where different answers change what gets built; make routine calls yourself and state the assumption. Skip this step only if the run already began with a `grill-me` pass.
 1. Run **`gather-requirements`** — read-only trace + resolve every scope decision *with the user*. This is where "stuff we hadn't considered" gets surfaced while it's a one-line edit, not a PR round-trip. Raise every held `repo-instructions` rule whose **When** the planned diff plausibly triggers as one of these scope decisions; a yes becomes a numbered requirement. Where a requirement could reasonably be drawn two ways and the two readings build different products, convene **`discussion-room`** (2 senior-engineer + 2 PM seats, grounded in `icp` / `product-philosophy` / `product-overview`, one round, advisory) for options and a recommendation before you decide. It never decides for you.
 2. Run **`grill-me`** on the resulting requirement list to pressure-test it before it's frozen.
+2a. Run the **`steward`** skill in shape mode on the grilled list, as a sub-agent. It writes `.scratch/<slug>/steward.md`: where each requirement should live, which existing module or helper to use instead of adding one, what the change adds, a complexity score (S, M, L), a blast-risk score (low, medium, high) and a budget (new files, new abstractions, net source lines, new flags). Fold its reuse findings into the list as you would any scope decision. Show its verdict line and budget at the sign-off below: signing the requirements signs the budget too, so anything past it later comes back to you.
 3. **Freeze** the final numbered list to `.scratch/<slug>/requirements.md`. (The orchestrator writes this file; `gather-requirements` is read-only and won't.) The list is the scope boundary: not listed = not built.
 4. **Stop and get explicit sign-off** on `requirements.md`. This is the contract every later gate tests against; an incomplete contract is faithfully shipped incomplete (see `feedback-verifier-contract-scope`). Do not proceed without a yes.
 
 ## Phase 2 — Split  🔒 human gate
 
-Run **`pr-split-audit`** against `requirements.md`. It plans slices so the bulk auto-approves in Bugbot and only the feature core needs human domain review; it writes the plan to `~/.claude/plans/<slug>.md`. Copy the slice list + merge order into `.scratch/<slug>/split.md`. Present it and get a single go-ahead (or "one slice, no split"). Opening PRs is outward-facing — the go-ahead covers the whole run.
+Run **`pr-split-audit`** against `requirements.md`. It plans slices so the bulk auto-approves in Bugbot and only the feature core needs human domain review; it writes the plan to `~/.claude/plans/<slug>.md`. Copy the slice list + merge order into `.scratch/<slug>/split.md`. Give each slice its share of the steward's budget in `split.md`: the items from `steward.md`'s "What it adds" that it carries, its share of the net source lines, a blast score from the paths it carries, and a complexity score from the steward's rubric applied to its items. The shares add up to the whole budget. Present it and get a single go-ahead (or "one slice, no split"). Opening PRs is outward-facing — the go-ahead covers the whole run.
 
 ## Phase 2.5 — Spec  🔒 human gate (optional)
 
@@ -74,6 +77,7 @@ Per slice, in dependency order (independent leaves in parallel):
 4. **Review until releasable** — run **`/review-feature`** on that worktree with `.scratch/<slug>/requirements.md` (scoped to the slice) as the contract. It owns the whole loop and its two stages: gate the branch pre-PR via `pre-pr-gate` — three passes, each run by Codex, Gemini, and Cursor, cap 4 rounds — then, once you've pushed and opened the PR, loop CI checks + bot comments via `fix-bot-comments` until green with every thread resolved. The loop happens on the branch first, not on a PR someone is watching.
 5. **Answer what it surfaces.** `/review-feature` escalates anything the contract doesn't cover back to you; those answers are yours to give. Scope changes go into `requirements.md` (re-sign-off if material); bugs ruled out of scope get one line in `progress.md`.
 6. **Open the PR only on Stage 1 RELEASE** — main session pushes and opens it per `create-pr` (base `staging`, assignee `Dwonczykj`, and the web-app four-heading body — Problem / Changes / Testing / Risks — plus the Linear line, or the `skip-template` label to bypass the check), then `/review-feature` continues into Stage 2.
+7. **Steward on the green PR.** Once Stage 2 is green, run the **`steward`** skill in review mode on the slice, with its share of the budget from `split.md`. Within budget, bring its cuts to the user as the complexity review. Over budget, ask the user before anything is cut: name the rows over and the cuts that bring them back, and let them choose between cutting and raising the budget. Record the answer in `progress.md`. (Orchestrated runs do this through `sf:orchestrate`.)
 
 ## Board format (orchestrated runs)
 
@@ -148,7 +152,8 @@ Cover every turn including the ones that changed direction or corrected an earli
 | Seam | Gate | Kind |
 |---|---|---|
 | start of Phase 1 | clarifying questions answered | human |
-| after Phase 1 | contract signed off | human |
+| after grill-me, before the contract | steward shaping: where it lives, reuse, complexity, blast, budget | tool |
+| after Phase 1 | contract signed off, budget included | human |
 | after Phase 2 | split approved | human |
 | after the split, before build | spec required? if yes, Opus 4.8 High agent grills then runs `openspec-propose`, each artifact signed off | human (optional) |
 | during plan review, before `PLAN OK` | width questions answered — which behaviour of the touched code the tests will freeze (pin / leave / it's a bug) | human |
@@ -158,7 +163,7 @@ Cover every turn including the ones that changed direction or corrected an earli
 | before each PR opens | `/review-feature` Stage 1 RELEASE (3 passes × Codex + Gemini + Cursor) | tool (Codex + Gemini + Cursor + lint/jest) |
 | any complex or out-of-diff finding | `discussion-room` options + recommendation, then decide | tool (panel) + human |
 | before merge | `/review-feature` Stage 2: CI green + threads resolved | tool + human |
-| orchestrated runs, each slice once green | `complexity-reduction` cuts decided by the user, built, re-reviewed | tool + human |
+| each slice once green | steward review against the budget; over budget asked, never cut silently; cuts decided by the user, built, re-reviewed | tool + human |
 | all PRs green, no unresolved bot comments | Phase 5 final report emitted | tool |
 
 Update `progress.md` at each row so the run is resumable.

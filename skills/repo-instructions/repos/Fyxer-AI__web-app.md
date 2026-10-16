@@ -30,3 +30,22 @@ repo's own `AGENTS.md` / `.claude/rules/backend-standards.md`.
   `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`.
 - **Check:** diff the four copies' shared keys against the root file; any drift in the
   four recorded keys fails the check.
+
+## Blast risk
+
+High: the security-review globs from `apps/factory/brief.md` (keep the two in step), then collections, migrations, billing and usage attribution, and data deletion.
+- HTTP routes and webhooks: `**/triggers/http/**`, `**/wrapEndpoint.ts`, `platform/express/**`, `services/custom-integration-egress/**`, `apps/factory/src/server.ts`, `**/routes/**`, `**/*webhook*`, `**/*signature*`
+- Sign-in, OAuth and tokens: `**/*auth*`, `**/*token*`, `**/*githubApp*`, `apps/sso/**`, `domains/sso/**`, `domains/oauth-clients/**`, `domains/connections/src/accessTokens/**`
+- Rules: `**/firestore.rules`, `**/storage.rules`
+- Secrets and credentials: `**/*secret*`, `**/*credential*`, `services/custom-integration-vault/**`
+- Impersonation: `**/*impersonat*`
+- Sending email or acting on a user's behalf: `**/*send*`, `domains/transactional-email/**`, `platform/google-workspace/src/clients/**/email/**`, `platform/microsoft-graph/src/clients/outlook/email/**`, `**/tools/definitions/comms/**`, `**/*approv*`, `**/toolActions*`
+- Collections: `domains/*/src/collections.ts`, `platform/firestore/src/enums/CollectionName.ts`, `**/repositories/**`
+- Migrations: `migrations/**`
+- Billing and usage attribution: `domains/subscriptions/**`, `apps/subscriptions/**`, `platform/stripe/**`, `services/functions-stripe-event-handler/**`, `platform/usage/**`, `domains/usage-events/**`, `**/*billing*`
+- Data deletion: `**/*delet*`, `**/*purge*`, `apps/identity/src/triggers/auth/handleAuthUserDeleted/**`
+
+Medium:
+- Shared packages with callers in other domains: `platform/**`, `library/**`
+- Composite indexes: `platform/firestore/firestore.indexes.json`
+- Workspace and deploy config: `pnpm-workspace.yaml`, `**/pnpm-workspace.*.yaml`, `firebase.json`, `**/Dockerfile`

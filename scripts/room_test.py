@@ -117,6 +117,14 @@ with tempfile.TemporaryDirectory() as d:
     assert hook("Edit", {"file_path": os.path.join(d, "signoffs.jsonl")}, orch)
     assert hook("Bash", {"command": "echo '{}' >> events.jsonl"}, orch, cwd=d)
     assert hook("Bash", {"command": f"python3 {d}/room signoff --dir {d}"}, worker)
+    assert hook("Bash", {"command": f"cd {d} && FOO=1 ./room render --dir ."}, worker)
+    assert hook("Bash", {"command": f"echo hi\npython3 -u {d}/room render --dir {d}"}, worker)
+    # Text that only names the subcommands is not an invocation: commit messages, heredocs, quotes.
+    commit = (f"git commit -m \"$(cat <<'EOF'\nfeat: room signoff --message\n\nroom render refuses DONE\nEOF\n)\""
+              f" && python3 {d}/room log --dir {d} --ticket s1 --role build --type note --note committed")
+    assert not hook("Bash", {"command": commit}, worker)
+    assert not hook("Bash", {"command": "git commit -m \"docs: room signoff; room render\""}, worker)
+    assert not hook("Bash", {"command": "grep -n 'room signoff' commands/orchestrate.md"}, worker)
     assert not hook("Bash", {"command": f"tail -n +3 {d}/events.jsonl > /tmp/x"}, worker)
     assert not hook("Write", {"file_path": "/tmp/elsewhere/ledger.md"}, worker)
     reqs = os.path.join(d, "requirements.md")

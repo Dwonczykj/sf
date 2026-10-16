@@ -8,7 +8,9 @@ A room dir is a dir holding events.jsonl. In one:
   sign-off is newer than SF_SIGNOFF_EDIT_MINUTES (default 60). Same for openspec/changes/<name>/** once
   the spec gate is signed, with `--change openspec/changes/<name>`, looked up in ~/FyxerGh/build-room/<name>/
   and in `.scratch/<name>/` of every worktree of the file's repo.
-- `room signoff` and `room render` run from Bash: orchestrator only.
+- `room signoff` and `room render` run from Bash: orchestrator only. Only a command that runs the CLI
+  counts (`room ...`, `<path>/room ...`, `python3 <path>/room ...`), never text that names it in a quote,
+  a commit message or a heredoc. `bash -c '...'` and `eval` hide an invocation from it.
 
 Bash is best effort. It catches redirects, `tee`, `sed -i`, `cp`, `mv`, `ln`, `install`, `truncate` and
 `rm` naming one of these files by a literal path. It can't catch a path held in a variable, a script or `python -c` that
@@ -28,6 +30,9 @@ EDIT_MINUTES = int(os.environ.get("SF_SIGNOFF_EDIT_MINUTES", "60"))
 REDIRECT = re.compile(r"\d?>>?\|?\s*([^\s;&|<>]+)")
 SPEC = re.compile(r"(.*?)/openspec/changes/([\w.-]+)(?:/|$)")
 BUILD_ROOM = os.path.expanduser("~/FyxerGh/build-room")
+# A heredoc body, kept only for the rest of its opening line (where a redirect may sit).
+HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)(\w+)\1([^\n]*)\n.*?(?<=\n)[ \t]*\2[ \t]*(?=\n|$)", re.S)
+OPERATORS = ";&|()"
 
 
 def is_orchestrator(transcript):
@@ -75,6 +80,29 @@ def bash_targets(command):
         elif cmd in ("tee", "truncate", "rm", "mv") or (cmd == "sed" and any(x.startswith("-i") for x in argv)):
             targets += args
     return targets
+
+
+def runs_room(command, subcommands=("signoff", "render")):
+    """True if a simple command in `command` runs the room CLI with one of `subcommands`."""
+    lex = shlex.shlex(HEREDOC.sub(r"\3", command).replace("\n", ";"), posix=True, punctuation_chars=OPERATORS)
+    lex.whitespace_split = True
+    try:
+        tokens = list(lex)
+    except ValueError:  # unbalanced quotes: fall back to the text, which errs towards denying
+        return bool(re.search(rf"\broom\s+({'|'.join(subcommands)})\b", command))
+    argv = []
+    for tok in tokens + [";"]:
+        if not set(tok) <= set(OPERATORS):
+            argv.append(tok)
+            continue
+        while argv and re.match(r"^\w+=", argv[0]):
+            argv.pop(0)
+        if argv and os.path.basename(argv[0]).startswith("python"):
+            argv = [x for x in argv[1:] if not x.startswith("-")]
+        if len(argv) > 1 and os.path.basename(argv[0]) == "room" and argv[1] in subcommands:
+            return True
+        argv = []
+    return False
 
 
 def worktrees(path):
@@ -126,7 +154,7 @@ def main():
         command = inp.get("command") or ""
         for target in bash_targets(command):
             reasons.append(check(os.path.join(cwd, os.path.expanduser(target)), orchestrator, transcript))
-        if re.search(r"\broom\s+(signoff|render)\b", command) and not orchestrator(transcript):
+        if runs_room(command) and not orchestrator(transcript):
             reasons.append("only the sf:orchestrate session runs `room signoff` and `room render`.")
     reason = next((r for r in reasons if r), None)
     if reason:

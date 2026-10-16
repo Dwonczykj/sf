@@ -23,7 +23,8 @@ at the two moments that matter: stated at planning, checked post-build.
    (slash → `__`). If it doesn't exist, this repo has no supplements — **silently
    no-op**, change nothing.
 3. If it exists, read it. Each `###` block is one rule with **When / Then / Check**
-   lines. Treat the whole file as prose; there is nothing to parse.
+   lines. Treat the whole file as prose; there is nothing to parse. A `## Blast risk` section is
+   not a rule: the `steward` skill reads it (see "Blast risk" below), and planning and build leave it out.
 
 ## Consume — per phase
 
@@ -43,6 +44,27 @@ rule reaches the non-Claude vendors that never saw the repo's own standards.
 
 That's the whole contract: load if present, raise at plan, carry into requirements.md
 at build. No config schema, no new workflow args.
+
+## Blast risk
+
+A repo's file may end with a `## Blast risk` section: the paths where a mistake costs most, which the
+`steward` skill uses to score a change's blast risk (low, medium, high). Two lists, `High:` and
+`Medium:`, one bullet per group: a short label, then its globs in backticks, matched
+case-insensitively against repo-relative paths.
+
+```md
+## Blast risk
+
+High:
+- Sign-in and tokens: `**/*auth*`, `**/*token*`
+- Data deletion: `**/*delet*`
+
+Medium:
+- Shared packages: `platform/**`
+```
+
+A path matching nothing is low. With no section, the steward scores from the plan and marks the score
+unsupported.
 
 ## Adding a repo
 
