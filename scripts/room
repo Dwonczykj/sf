@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Build-room CLI. `room log` appends one validated event to <dir>/events.jsonl.
+
+Every session writes events through this, never with an editor or a shell redirect, so each line
+parses and carries a sequence id the orchestrator's ledger uses as its cursor.
+"""
+import argparse
+import fcntl
+import json
+import os
+import re
+import sys
+from datetime import datetime, timezone
+
+TYPES = ("state", "question", "answer", "blocker", "ci", "note")
+# Board states from start-feature's "Board format". A state event's note starts with one of these.
+STATES = ("PROBE", "NOT STARTED", "BUILDING", "WAITING ON JOEY", "LOCAL", "PUSHED", "DRAFT PR", "PR",
+          "COMPLEXITY REVIEW", "DONE", "MERGED")
+NAME = re.compile(r"^[A-Za-z0-9][\w.-]{0,63}$")
+SHA = re.compile(r"^[0-9a-f]{7,40}$")
+MAX_NOTE = 500
+
+
+def validate(a):
+    if not os.path.isdir(a.dir):
+        return f"--dir {a.dir} is not a directory"
+    if not NAME.match(a.ticket):
+        return f"--ticket {a.ticket!r} must be letters, digits, '.', '_' or '-'"
+    if not NAME.match(a.role):
+        return f"--role {a.role!r} must be letters, digits, '.', '_' or '-'"
+    if a.sha is not None and not SHA.match(a.sha):
+        return f"--sha {a.sha!r} must be 7 to 40 lowercase hex characters"
+    note = a.note.strip()
+    if not note or len(note) > MAX_NOTE:
+        return f"--note must be 1 to {MAX_NOTE} characters; put detail in a file and name its path"
+    if any(ord(c) < 32 for c in note):
+        return "--note must be one line, without control characters"
+    if a.type == "state" and not any(note == s or note.startswith(s + " ") for s in STATES):
+        return f"a state note must start with one of: {', '.join(STATES)}"
+    return None
+
+
+def log(a):
+    error = validate(a)
+    if error:
+        print(f"room log: {error}", file=sys.stderr)
+        return 2
+    path = os.path.join(a.dir, "events.jsonl")
+    with open(path, "a+", encoding="utf-8") as f:
+        # Counting lines under the lock keeps ids sequential across writers. O(n) per append, fine
+        # into the tens of thousands of lines; keep a last-id file if a run ever gets that big.
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.seek(0)
+        event = {
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "id": sum(1 for _ in f) + 1,
+            "ticket": a.ticket,
+            "role": a.role,
+            "type": a.type,
+            "sha": a.sha,
+            "note": a.note.strip(),
+        }
+        line = json.dumps(event, ensure_ascii=False)
+        f.write(line + "\n")
+        f.flush()
+    print(line)
+    return 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="room")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    lp = sub.add_parser("log", help="append one event to <dir>/events.jsonl")
+    lp.add_argument("--dir", required=True, help="absolute path of the run's state dir")
+    lp.add_argument("--ticket", required=True, help="slice or ticket id, e.g. slice2")
+    lp.add_argument("--role", required=True, help="e.g. build, ci, orchestrator")
+    lp.add_argument("--type", required=True, choices=TYPES)
+    lp.add_argument("--sha", help="head SHA, when there is one")
+    lp.add_argument("--note", required=True, help="one line; a state note starts with the state")
+    a = p.parse_args(argv)
+    return log(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

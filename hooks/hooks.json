@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/orchestrator-context.py\"; exit 0",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

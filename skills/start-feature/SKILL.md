@@ -24,6 +24,8 @@ This is a **thin orchestrator**. It doesn't re-implement any phase — it invoke
   progress.md        # phase checklist: pending / done, with the gate outcome per phase
   requirements.md    # the locked contract (Phase 1 output) — the acceptance target
   split.md           # the slice plan (Phase 2 output; pr-split-audit also writes ~/.claude/plans/<slug>.md)
+  events.jsonl       # orchestrated runs: one JSON event per line, appended only through `room log`
+  ledger.md          # orchestrated runs: the orchestrator's own notes and its cursor into events.jsonl
 ```
 
 `<slug>` is a kebab feature name (from the Linear code + title if given). Create the dir and an initial `progress.md` before Phase 1. Update `progress.md` at every gate so a resumed session knows where it is.
@@ -60,6 +62,10 @@ The Phase 3 per-slice plan (solve-in-worktrees) is unchanged; the OpenSpec chang
 
 Worker models + provider: the build + test sub-agents' models follow `~/.claude/sf-models.json` (set by `/sf:models`; per-run flags `--build-model`/`--test-model`/`--model`) — `build` defaults to `claude-opus-4-8`, `tests` to `claude-sonnet-5`. Which vendor they run on follows `~/.claude/sf-model-provider` (`/sf:model-provider`) — `anthropic`/`codex`/`cursor`. Switch models for cost/speed, provider to spare Anthropic usage; the review panel stays cross-vendor. `solve-in-worktrees` Phase 3 reads both.
 
+**More than two slices: orchestrate.** When `split.md` has more than two slices, hand Phase 3 to **`sf:orchestrate <slug>`**. It runs the slices as parallel worker sessions (at most three at once) and keeps the state board in `progress.md` (see "Board format" below). It brings you only bug questions and a complexity review of each slice. The relay below is for runs of one or two slices.
+
+**One fresh session per slice.** Build each slice in a fresh context window. At the start of every slice after the first, run the `fork-session` skill to spawn a new session that takes over the run, and stop working on the feature in the current one (two sessions must never edit the same worktree). Hand over a `fork-prompt`-style brief: feature slug, state dir (`.scratch/<slug>/`), worktree path, branch, PR (if one is open), the stack base, the slice to build, and anything the previous slice left open. Name it `<feature>-slice<N>`. The fork runs its slice through to green — steps 1–6 below, then CI and bot comments on the PR after every push — updates `progress.md`, and then forks the next slice the same way. Everything the next session needs must already be in `progress.md`, `requirements.md` and `split.md`, never only in the outgoing session's context. A wave of independent slices may share one fork.
+
 Per slice, in dependency order (independent leaves in parallel):
 
 1. **Worktree + plan** — follow **`solve-in-worktrees`** Phases 1–2: one sibling worktree off `origin/staging` (branch per `create-branch`), `pnpm i`, then the slice's requirements + solution written out. Run **`repo-instructions`** (consume step): append the matched rules under a `## Repo build-checks (sf:repo-instructions)` heading in the slice's `requirements.md`, so the build agent and verify/test agents carry the **Check** and the non-Claude vendors see the rule. **If a Phase 2.5 spec exists and this is the first slice in merge order**, copy `openspec/changes/<slug>/` into this worktree and commit it on its branch (a `docs: add <slug> openspec change` commit is fine) so the spec ships in this slice's PR — no separate spec PR.
@@ -68,6 +74,39 @@ Per slice, in dependency order (independent leaves in parallel):
 4. **Review until releasable** — run **`/review-feature`** on that worktree with `.scratch/<slug>/requirements.md` (scoped to the slice) as the contract. It owns the whole loop and its two stages: gate the branch pre-PR via `pre-pr-gate` — three passes, each run by Codex, Gemini, and Cursor, cap 4 rounds — then, once you've pushed and opened the PR, loop CI checks + bot comments via `fix-bot-comments` until green with every thread resolved. The loop happens on the branch first, not on a PR someone is watching.
 5. **Answer what it surfaces.** `/review-feature` escalates anything the contract doesn't cover back to you; those answers are yours to give. Scope changes go into `requirements.md` (re-sign-off if material); bugs ruled out of scope get one line in `progress.md`.
 6. **Open the PR only on Stage 1 RELEASE** — main session pushes and opens it per `create-pr` (base `staging`, assignee `Dwonczykj`, and the web-app four-heading body — Problem / Changes / Testing / Risks — plus the Linear line, or the `skip-template` label to bypass the check), then `/review-feature` continues into Stage 2.
+
+## Board format (orchestrated runs)
+
+An orchestrated run's `progress.md` holds the board and nothing else. Reports go to `events.jsonl` through `room log`, and the orchestrator's decisions and cursor go to `ledger.md` (both set out in `commands/orchestrate.md`), so the file stays the size of the board however long the run goes. The progress-tree mod reads the `## State board` heading with its "last updated" stamp, the first fenced block after "Dependency tree", and the `- ` lines after "Open questions for Joey:", so keep those exactly.
+
+````md
+# <slug>: progress
+
+<frame, type, branch, OpenSpec change: the Phase 0 to 2.5 lines>
+
+## State board (kept current by "<orchestrator session name>"; last updated <YYYY-MM-DD HH:MM>)
+
+Only the orchestrator edits this file. Workers report with `room log` to `events.jsonl` in this dir; the orchestrator wakes on that file.
+
+Dependency tree (an arrow means "stacks on, merges after"; "after:" names a slice it waits on without stacking):
+
+```
+staging
+└─ #14646  slice 1, schema          PR, CI green. a1b2c3d4e5
+   ├─ slice 2, write path           BUILDING, LOCAL 07ce8a1
+   │  └─ slice 4, UI                NOT STARTED (needs slice 2)
+   └─ slice 3, read path            WAITING ON JOEY (Q2). after: slice 2
+      └─ probe: rate limit          PROBE, never commit
+```
+
+Probes and leftovers (never merge):
+- ...
+
+Open questions for Joey:
+- Q2: ...
+````
+
+States, in order: PROBE (never committed to a PR), NOT STARTED (blocker named), BUILDING, WAITING ON JOEY, LOCAL, PUSHED, DRAFT PR, PR (with "blocked by" PRs and pre-merge probes), COMPLEXITY REVIEW (green, waiting on Joey's cuts), DONE, MERGED. Each tree line carries the head SHA and CI state.
 
 ## Phase 4 — Close out
 
@@ -119,6 +158,7 @@ Cover every turn including the ones that changed direction or corrected an earli
 | before each PR opens | `/review-feature` Stage 1 RELEASE (3 passes × Codex + Gemini + Cursor) | tool (Codex + Gemini + Cursor + lint/jest) |
 | any complex or out-of-diff finding | `discussion-room` options + recommendation, then decide | tool (panel) + human |
 | before merge | `/review-feature` Stage 2: CI green + threads resolved | tool + human |
+| orchestrated runs, each slice once green | `complexity-reduction` cuts decided by the user, built, re-reviewed | tool + human |
 | all PRs green, no unresolved bot comments | Phase 5 final report emitted | tool |
 
 Update `progress.md` at each row so the run is resumable.
