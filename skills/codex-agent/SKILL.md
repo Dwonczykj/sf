@@ -14,8 +14,7 @@ CLI. Using this skill means the factory calls codex through its own CLI, so it d
 `codex` on PATH (`npm install -g @openai/codex`), authenticated once already
 (`codex login status` shows logged in, not an error) — login is a browser OAuth flow, so
 run `codex login` yourself, it can't be done on your behalf. No MCP registration is
-needed for this skill (that's the whole point); `sf:install` still checks the MCP because
-the review/gate skills currently call it directly.
+needed (that's the whole point); every factory review seat calls codex through this skill.
 
 ## Usage
 ```
@@ -98,9 +97,7 @@ findings and a VERDICT line." | node ${CLAUDE_PLUGIN_ROOT}/skills/codex-agent/sc
 
 This wrapper is stateless: each call is fresh, with no thread resume. On later loop
 rounds, re-run against the current diff — same as cursor-agent and gemini-agent already
-do. (The `mcp__codex__codex` path in `pre-pr-gate` / `solve-in-worktrees` keeps a
-`threadId` for `codex-reply` across rounds; this CLI skill trades that for having no MCP
-dependency.)
+do.
 
 ## On failure
 Surface the error and stop. Don't try to install or re-authenticate on the user's behalf

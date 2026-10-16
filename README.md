@@ -45,11 +45,12 @@ All commands share one state contract: `.scratch/<slug>/` holding `progress.md` 
 
 | Command | Does |
 |---|---|
-| `sf:install` | Check (and help fix) the external deps the factory needs: Cursor CLI, Codex CLI (the `codex` MCP is optional — `codex-agent` uses the CLI directly), the OpenSpec CLI (optional Phase 2.5 spec step), then prompt for the `branchPrefix` config. Run this once per machine before the rest. |
+| `sf:install` | Check (and help fix) the external deps the factory needs: Cursor CLI, Codex CLI (the `codex` MCP is optional — `codex-agent` uses the CLI directly), the OpenSpec CLI (optional Phase 2.5 spec step), the Qodo CLI (optional `pre-pr-gate` Pass E), then prompt for the `branchPrefix` config. Run this once per machine before the rest. |
 | `sf:reload [plugin\|plugin@marketplace]` | Sync the installed plugin cache from its local marketplace source (default: `sf` itself) via `claude plugin update`, then tell you to restart to pick it up. Run after editing a command in `commands/`. |
 | `sf:start-feature <idea\|PRE-####>` | Full pipeline, idea → open PR. Delegates to the `start-feature` skill. |
 | `sf:investigate <report>` | Start from a reported bug instead of a feature idea: grill, root-cause, problems + requirements, decide on a spec, then run the factory from Phase 2 onward. |
 | `sf:continue [slug]` | Read `progress.md`, resume from the first pending phase. |
+| `sf:orchestrate [slug] [--adopt]` | Run a split of more than two slices as parallel worker sessions behind one state board; `--adopt` takes over a build already under way. |
 | `sf:plan [idea\|PRE-####]` | Phases 0–2 only: frame, scope + lock `requirements.md`, split. Stops at split approval. |
 | `sf:build [slug\|slice]` | Worktree + 3-model plan review + build + tests for a slice, as prose (model-driven). Commits locally, no push. |
 | `sf:build-verify [slug]` | Same Phase 3 machine as a **deterministic Workflow**: schema'd `PLAN OK`/`RELEASE` verdicts, cross-vendor (Codex+Gemini+Cursor) `parallel()` thunks, capped build↔verify loop over a wave of independent slices, to pre-PR RELEASE. Halts back to you for width questions. Never pushes. |
@@ -58,7 +59,7 @@ All commands share one state contract: `.scratch/<slug>/` holding `progress.md` 
 | `sf:fix-pr [PR]` | Same green-gate as `sf:ci-green`, but reviews the diff with Codex + Cursor *before* each push so fewer bot round-trips are needed. |
 | `sf:view-agents` | Open the local agent-team dashboard (starts its dev server on :7777 first if needed). |
 
-The phase commands delegate to skills bundled with this plugin under `skills/` — `gather-requirements`, `pr-split-audit`, `solve-in-worktrees`, `review-feature`, `pre-pr-gate`, `fix-bot-comments`, `discussion-room`, `create-branch`, `create-pr`, `cursor-agent`, `diff-review`, `commit-hang-guard`, `lint-in-ignored-worktree`, `linear-update-issue-on-pr-merge`, `prune-merged-worktrees`, `setup-worktree-webapp`, `repo-instructions`, `steward`, `start-feature` itself. One implementation each, no forks. `grill-me` is the one exception: it's not bundled here because it already ships in the separate `anthropic-skills` plugin, which most installs already have.
+The phase commands delegate to skills bundled with this plugin under `skills/` — `gather-requirements`, `pr-split-audit`, `solve-in-worktrees`, `review-feature`, `pre-pr-gate`, `fix-bot-comments`, `discussion-room`, `create-branch`, `create-pr`, `cursor-agent`, `diff-review`, `commit-hang-guard`, `lint-in-ignored-worktree`, `linear-update-issue-on-pr-merge`, `prune-merged-worktrees`, `setup-worktree-webapp`, `get-worktree`, `repo-instructions`, `steward`, `start-feature` itself. One implementation each, no forks. `grill-me` is the one exception: it's not bundled here because it already ships in the separate `anthropic-skills` plugin, which most installs already have.
 
 ### Portability
 
@@ -73,6 +74,8 @@ TREES_ROOT=$(dirname "$MAIN")
 `git worktree list` always prints the main worktree first, so this resolves the same whether it's run from the main checkout or a linked worktree. Home-relative paths (the split-plan dir) use `~/.claude/plans/`, and the "don't run `tsc --noEmit`" rule now points at "the repo's `CLAUDE.md`" rather than one absolute file.
 
 The branch author prefix is a first-class install-time setting, not a hardcoded string. The plugin declares a `branchPrefix` `userConfig` option (see `.claude-plugin/plugin.json`); Claude Code prompts for it when the plugin is first enabled and substitutes it into `create-branch` / `solve-in-worktrees` via the `${user_config.branchPrefix}` token. Leave it blank and the skills fall back to your shell username (`whoami`), so a colleague gets `alice/feat-…` with zero edits. Change it later with `/plugin configure sf`.
+
+Two more install-time options work the same way: `prAssignee` (who `create-pr` assigns PRs to; blank means yourself, `@me`) and `linearProject` (the Linear project `create-pr` searches and `linear-update-issue-on-pr-merge` checks; blank means no project filter).
 
 The one remaining *convention* (not a path, doesn't block install): worktrees are assumed to be siblings of the main checkout.
 
@@ -98,6 +101,8 @@ Frequency is the threshold, not a percentage — only a 5 fires, so hand-offs st
 Not yet honoured by `sf:build-verify` (the deterministic Workflow) — that path needs a new halt reason in `workflows/build-verify-slice.js`, so for now use `sf:build` when you want stay-hot on the build phase.
 
 ## Install
+
+Inside the `Fyxer-AI/web-app` repo the plugin is already enabled for everyone through the repo's `fyxer` marketplace, so skip the commands below there (installing `sf@sf` as well would give you two plugins named `sf`).
 
 One line, from GitHub:
 

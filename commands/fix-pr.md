@@ -15,11 +15,11 @@ Target PR: the arg ($ARGUMENTS), else the PR for the current branch (`gh pr view
 
 2. **Pre-push review (the point of this command).** Before the first commit and before every later push, review the current diff vs the PR base with two independent models, read-only, in parallel. Diff to hand them: `git diff origin/<baseRef>...HEAD`.
 
-   Codex — `mcp__codex__codex { cwd: "<worktree>", sandbox: "read-only", approval-policy: "never", prompt: "<review prompt>" }` (keep the `threadId` for `codex-reply` on later rounds).
+   Codex — `echo "<review prompt>" | node ${CLAUDE_PLUGIN_ROOT}/skills/codex-agent/scripts/run-agent.mjs --sandbox read-only --cwd <worktree> --timeout 900` (the `codex-agent` skill; the local `codex` CLI, sandboxed read-only).
 
    Cursor — `echo "<the same review prompt, verbatim>" | node ${CLAUDE_PLUGIN_ROOT}/skills/cursor-agent/scripts/run-agent.mjs --model gpt-5.3-codex-high --cwd <worktree> --timeout 900` (cheap Cursor-billed tier; bump to `claude-sonnet-5-high` for a high-stakes fix).
 
-   The prompt asks each model to find the correctness bugs, unhandled cases, and reuse/simplification issues Cursor Bugbot / Codex-connector would flag, and to end with a verdict line. Append, verbatim (Cursor isn't sandboxed): *review only — do not edit, create, or delete any file; do not run build/test/typecheck/lint commands or execute code to test a hypothesis; if a shell command is rejected, don't retry it, just note that and continue with what's already visible; output findings and a verdict line.* On later rounds re-run Cursor fresh against the updated diff; continue Codex on `codex-reply`.
+   The prompt asks each model to find the correctness bugs, unhandled cases, and reuse/simplification issues Cursor Bugbot / Codex-connector would flag, and to end with a verdict line. Append, verbatim (Cursor isn't sandboxed): *review only — do not edit, create, or delete any file; do not run build/test/typecheck/lint commands or execute code to test a hypothesis; if a shell command is rejected, don't retry it, just note that and continue with what's already visible; output findings and a verdict line.* On later rounds re-run both fresh against the updated diff.
 
    Reconcile: raised by **both** → treat as real; raised by **one** → verify against the code yourself before acting (models are reviewers, not oracles — same discipline as `fix-bot-comments`). Then apply the Phase 3 decision rule from `fix-bot-comments` (redesign in scope > fix if the trade-off is worth it > decline), fix the real ones, commit, and push once — so the diff the bots see is already addressed.
 

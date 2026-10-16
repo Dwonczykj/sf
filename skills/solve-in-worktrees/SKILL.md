@@ -1,6 +1,6 @@
 ---
 name: solve-in-worktrees
-description: Take the fixes already identified in this session and deliver each one as its own worktree + PR, driven by a build-agent ↔ Codex-verifier loop. Creates one worktree per split off `origin/staging` with Joey's branch naming, plans requirements + solution per worktree, reviews that plan with Codex, Gemini, and Cursor before any code, spawns a build agent plus three concurrent test agents that work from the approved plan rather than the built code (test-requirement gathering, test create, test update), then runs three verify passes (solution-vs-requirements, code quality, test-mock scrutiny — see `pre-pr-gate`) with Codex, Gemini, and Cursor on each, loops until all release, opens the PR, then keeps looping on CI checks and bot comments. Use when the session already knows what needs fixing and the user says "solve in worktrees", "/solve-in-worktrees", "split this into worktrees and ship it", "build and verify each fix in its own branch".
+description: Take the fixes already identified in this session and deliver each one as its own worktree + PR, driven by a build-agent ↔ Codex-verifier loop. Creates one worktree per split off `origin/staging` with the configured branch naming, plans requirements + solution per worktree, reviews that plan with Codex, Gemini, and Cursor before any code, spawns a build agent plus three concurrent test agents that work from the approved plan rather than the built code (test-requirement gathering, test create, test update), then runs three verify passes (solution-vs-requirements, code quality, test-mock scrutiny — see `pre-pr-gate`) with Codex, Gemini, and Cursor on each, loops until all release, opens the PR, then keeps looping on CI checks and bot comments. Use when the session already knows what needs fixing and the user says "solve in worktrees", "/solve-in-worktrees", "split this into worktrees and ship it", "build and verify each fix in its own branch".
 user_invocable: true
 ---
 
@@ -79,9 +79,9 @@ The cheapest finding is the one caught while the plan is still a paragraph. Befo
 build agent is spawned, hand the **requirements + solution** from Phase 2 to three
 reviewers at once, same prompt to all three:
 
-```
-mcp__codex__codex { cwd: "<worktree path>", sandbox: "read-only",
-                    approval-policy: "never", prompt: "<the plan-review prompt>" }
+```bash
+echo "<the plan-review prompt>" | node ${CLAUDE_PLUGIN_ROOT}/skills/codex-agent/scripts/run-agent.mjs \
+  --sandbox read-only --cwd <worktree path> --timeout 900
 ```
 
 ```bash
@@ -158,7 +158,7 @@ TypeScript/Node expertise, the prompt supplies the repo standards).
 
 **Worker model + provider:** before spawning, resolve each role's model — per-run flag
 → `~/.claude/sf-models.json` (set by `/sf:models`) → blanket `--model` → default: the
-build agent uses `build` (default `claude-opus-4-8`), the Phase 3b test agents use
+build agent uses `build` (default `claude-opus-5-5`), the Phase 3b test agents use
 `tests` (default `claude-sonnet-5`). Then read `~/.claude/sf-model-provider` (missing =
 `anthropic`; set by `/sf:model-provider`). `anthropic` → spawn via the `Agent` tool with
 that role's model. `codex` / `cursor` → run the build agent (and the Phase 3b test agents)
@@ -205,7 +205,7 @@ Its prompt must carry:
 
 ## Phase 3b — Test agents, from the plan, concurrent with the build
 
-Three Codex agents, each its own `mcp__codex__codex` invocation and `threadId`, each with
+Three Codex agents, each its own `codex-agent` invocation, each with
 one job. They run **alongside** the build agent, and their source of truth is the
 **approved plan from Phase 2b — not the build agent's code**. Tests reverse-engineered
 from an implementation can only confirm what it already does; tests written from the plan
@@ -248,12 +248,12 @@ implementation invented, a caller it had to touch. Append these to the list as a
 block so plan-derived and diff-derived entries stay distinguishable — the first block is
 the oracle, the second is coverage.
 
-```
-mcp__codex__codex { cwd: "<worktree path>", sandbox: "read-only",
-                    approval-policy: "never", prompt: "<T1 prompt>" }
+```bash
+echo "<T1 prompt>" | node ${CLAUDE_PLUGIN_ROOT}/skills/codex-agent/scripts/run-agent.mjs \
+  --sandbox read-only --cwd <worktree path> --timeout 900
 ```
 
-**T2 — test create** (`sandbox: "workspace-write"`; starts as soon as T1's feed-1 list
+**T2 — test create** (`--sandbox workspace-write`; starts as soon as T1's feed-1 list
 lands, in parallel with the build agent — it does **not** wait for a diff). Writes the
 `NEW` entries against the interface the plan promised: the planned import path, the
 planned signature, the planned return shape. Mirror the nearest existing test file's shape
@@ -265,7 +265,7 @@ failure — a plan-derived test failing before the code exists is the oracle wor
 things T2 must never do to make red go away: stub the planned module into existence, or
 soften an assertion. When feed 2 arrives, T2 writes those entries too.
 
-**T3 — test update** (`sandbox: "workspace-write"`; concurrent with T2). Takes only the
+**T3 — test update** (`--sandbox workspace-write`; concurrent with T2). Takes only the
 `UPDATE` entries: existing tests whose assertions or mocks the diff has invalidated. A test
 that now fails is either a real regression — report it back, don't relax the assertion — or
 an assertion about behaviour the contract deliberately changed, which is the only case
@@ -287,12 +287,11 @@ splitting them.
 
 Once the build agent and the Phase 3b test agents report done, verify that worktree with
 **three separate passes, each run by Codex, Gemini, and Cursor** — nine concurrent
-calls. Codex keeps a `threadId` per pass (for `mcp__codex__codex-reply` on later
-rounds); Gemini and Cursor re-run fresh each round.
+calls. All three re-run fresh each round (none has thread resume).
 
-```
-mcp__codex__codex  { cwd: "<worktree path>", sandbox: "read-only",
-                     approval-policy: "never", prompt: "<see below>" }
+```bash
+echo "<see below>" | node ${CLAUDE_PLUGIN_ROOT}/skills/codex-agent/scripts/run-agent.mjs \
+  --sandbox read-only --cwd <worktree path> --timeout 900
 ```
 
 ```bash
@@ -347,7 +346,7 @@ Send findings back to the *same* build agent with `SendMessage` (its context is 
 and cheaper than a fresh spawn), one finding per line, each with the verifier's
 `file:line` and which pass raised it. Test findings go to T2/T3, not to the build
 agent. Then re-verify **Codex-only** by default (it's on the flat sub, so re-checking costs
-nothing on Cursor): `codex-reply` on each pass, targeting the prior P0s ("confirm each is
+nothing on Cursor): a fresh `codex-agent` call per pass, its prompt listing the prior P0s ("confirm each is
 resolved, flag regressions"). Only re-run the Gemini + Cursor seats when a fix was large or
 cross-cutting — one trusted reviewer confirming the specific fixes replaces the full panel
 each round, which is where the Cursor spend multiplies.
@@ -361,7 +360,7 @@ not as a blocker. Worktrees run independently; one stalling doesn't block the ot
 ## Phase 6 — PR
 
 The main session pushes (sub-agents can't) and opens the PR, following `create-pr`:
-base `staging`, assignee `Dwonczykj`. When a worktree's PR depends on another open PR's
+base `staging`, assignee the configured `prAssignee` (default: you). When a worktree's PR depends on another open PR's
 branch, register the chain as a native `gh stack` (`gh stack link`, see `create-pr`
 Phase 6b) rather than hand-chaining `--base` — it sets the bases and auto-retargets on
 merge.

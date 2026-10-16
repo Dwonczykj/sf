@@ -23,7 +23,7 @@ This is the single source of truth the build/verify skills read (`build`, `solve
 
 | Provider | Build + test workers run via | Consumes |
 |---|---|---|
-| `anthropic` (default) | the `Agent` tool, model `claude-opus-4-8` | your Claude Code usage |
+| `anthropic` (default) | the `Agent` tool, model `claude-opus-5-5` | your Claude Code usage |
 | `codex` | the `codex-agent` skill (`gpt-5.6-sol`, medium) | your OpenAI/ChatGPT Codex subscription |
 | `cursor` | the `cursor-agent` skill (`claude-opus-5-high`) | your Cursor subscription |
 
@@ -32,6 +32,6 @@ This is the single source of truth the build/verify skills read (`build`, `solve
 ## What this does NOT change
 
 - **The cross-vendor review panel** (Codex + Gemini-via-Cursor + Cursor, in `pre-pr-gate` / `solve-in-worktrees` verify) stays three independent vendors — that diversity is the whole point of the gate, and each seat already runs on its own vendor subscription, not your Claude Code usage. A worker-provider switch doesn't collapse it.
-- **The deterministic `sf:build-verify` workflow** picks its worker model from its own `--model` arg (default `claude-opus-4-8`), not this file — a workflow script can't read local state. Pass `sf:build-verify ... --model <slug>` there, or use the interactive `sf:build` / `sf:start-feature` path, which does honour this setting.
+- **The deterministic `sf:build-verify` workflow** picks its worker model from its own `--model` arg (default `claude-opus-5-5`), not this file — a workflow script can't read local state. Pass `sf:build-verify ... --model <slug>` there, or use the interactive `sf:build` / `sf:start-feature` path, which does honour this setting.
 
 End by stating the current provider and reminding me I can switch anytime with `/sf:model-provider codex|cursor|anthropic`.

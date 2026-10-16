@@ -1,6 +1,6 @@
 ---
 name: pre-pr-gate
-description: Left-shifted acceptance gate for a feature branch or worktree — runs everything the human reviewer and Cursor Bugbot would otherwise catch, locally, BEFORE the PR opens. Verifies the diff against a locked requirements contract, code quality (design/DRY/concurrency), and test-mock scrutiny — three separate passes, each reviewed by three independent models (Codex, Gemini, Cursor), not one bundled call — plus diff-review and the real code checks (lint / prettier / targeted typecheck / jest), looping build↔verify until every pass RELEASEs. Emits "ready to PR" — never opens the PR itself. Use when the user says "gate this before I push", "pre-pr gate", "/pre-pr-gate", "is this ready to open", or as the acceptance step inside /start-feature and solve-in-worktrees.
+description: Left-shifted acceptance gate for a feature branch or worktree — runs everything the human reviewer and Cursor Bugbot would otherwise catch, locally, BEFORE the PR opens. Verifies the diff against a locked requirements contract, code quality (design/DRY/concurrency), and test-mock scrutiny — three separate passes, each reviewed by three independent models (Codex, Gemini, Cursor), not one bundled call, plus a Codex bug-hunt pass (Pass D, copied from /code-review) — plus diff-review and the real code checks (lint / prettier / targeted typecheck / jest), looping build↔verify until every pass RELEASEs. Emits "ready to PR" — never opens the PR itself. Use when the user says "gate this before I push", "pre-pr gate", "/pre-pr-gate", "is this ready to open", or as the acceptance step inside /start-feature and solve-in-worktrees.
 user_invocable: true
 ---
 
@@ -38,11 +38,11 @@ Run all of these; collect findings before fixing.
 3. **diff-review.** Run the `diff-review` skill against the base (default `staging`): correctness → minimality → dead-code, auto-applying safe fixes. This shrinks the diff and removes what Bugbot would otherwise comment on.
 4. **Three separate verify passes, each run by three models — nine concurrent calls, never one bundled call.** Each pass has its own narrow job and its own `RELEASE` / `CHANGES REQUIRED` verdict. Each pass is reviewed independently by Codex, by Gemini, *and* by Cursor, with the **identical prompt** — three models on the same narrow job, from three different underlying model families, is the cheapest way to catch the finding any one model's blind spot drops.
 
-   Codex side — its own `threadId` per pass (kept for `codex-reply` on later rounds):
+   Codex side — via `codex-agent` (the local `codex` CLI, sandboxed read-only), one call per pass:
 
-   ```
-   mcp__codex__codex { cwd: "<worktree path>", sandbox: "read-only",
-                       approval-policy: "never", prompt: "<see pass below>" }
+   ```bash
+   echo "<see pass below>" | node ${CLAUDE_PLUGIN_ROOT}/skills/codex-agent/scripts/run-agent.mjs \
+     --sandbox read-only --cwd <worktree path> --timeout 900
    ```
 
    Gemini side — via `cursor-agent`, pinned to `gemini-3.8-flash-high` (antigravity/`agy` is unreliable, so Gemini is routed through the Cursor CLI instead — same wrapper shape). Both cursor-agent seats bill Cursor, so they run cheap tiers by default:
@@ -59,7 +59,7 @@ Run all of these; collect findings before fixing.
      --model gpt-5.3-codex-high --cwd <worktree path> --timeout 900
    ```
 
-   Neither `agy` (Gemini) nor `agent` (Cursor) run sandboxed read-only, so the pass prompt must end with: *review only — do not edit, create, or delete any file; do not run build/test/typecheck/lint commands or execute code to test a hypothesis; if a shell command is rejected, don't retry it, just note that and continue with what's already visible; output findings and a verdict line.* Neither has thread resume: on later rounds re-run both fresh against the current diff, while Codex continues on `codex-reply`.
+   Neither `agy` (Gemini) nor `agent` (Cursor) run sandboxed read-only, so the pass prompt must end with: *review only — do not edit, create, or delete any file; do not run build/test/typecheck/lint commands or execute code to test a hypothesis; if a shell command is rejected, don't retry it, just note that and continue with what's already visible; output findings and a verdict line.* None of the three has thread resume: on later rounds re-run each fresh against the current diff.
 
    **Reconciling the three.** Merge findings by `file:line` + claim, then:
    - raised by **two or more** → treat as real, fix first;
@@ -69,7 +69,7 @@ Run all of these; collect findings before fixing.
 
    Why three passes instead of one: a single prompt asking for contract compliance *and* design quality *and* test scrutiny grades the model on the first and starves the other two — that's the exact mechanism that let a sequential-await bug and a hidden-mock bug both ship in a PR whose one Codex-shaped review pass already asked for reuse/DRY. Splitting the job is what makes each pass actually get done. **No model is an oracle** on all three: if a finding contradicts code you've read, check it before acting — same discipline as `fix-bot-comments`.
 
-   **Pass A — contract verify.** Review `git diff origin/<base>...HEAD` against **each numbered requirement** (met / not met / met-but-broken, `file:line` evidence), plus any correctness or edge-case defect, unclear naming, and dead code. Explicitly not its job: design taste, DRY, concurrency, test quality, or comments — those are Pass B and Pass C. Not scope it wasn't asked for.
+   **Pass A — contract verify.** Review `git diff origin/<base>...HEAD` against **each numbered requirement** (met / not met / met-but-broken, `file:line` evidence), and treat every behavioural claim in the PR description (for example "rejected exactly as before") as a requirement too: open the code that implements it and check, plus any correctness or edge-case defect, unclear naming, and dead code. Explicitly not its job: design taste, DRY, concurrency, test quality, or comments — those are Pass B and Pass C. Not scope it wasn't asked for.
 
    **Pass B — code-quality verifier.** Explicitly **not** business-case correctness (that's Pass A) — this pass owns:
    - **Reuse / DRY against the whole codebase, not just the diff:** for each new helper, util, type, constant, or logic block, does an equivalent already exist? Cite `file:line`. Reuse-first, not extract-happy — don't propose a new abstraction just to merge two similar blocks the diff itself just added (`diff-review` Pass 2 already handles genuine in-diff redundancy; `coding-standards` bans premature abstraction).
@@ -104,10 +104,50 @@ Run all of these; collect findings before fixing.
    - Tests it is reading may have been written from the plan before the code existed. That makes a test/implementation disagreement a **build** finding by default (the plan is the interface contract), not a reason to soften the test.
    - Rank each finding **P0** (breaks correctness on a realistic input), **P1** (real edge case, lower likelihood), or **P2** (style/coverage nit). Only P0 findings gate `RELEASE`; log P1/P2 for the readiness report without blocking the loop on them.
 
+   **Pass D — bug hunt (instructions copied from `/code-review`), Codex only.** Passes A–C grade the diff against the contract, its design, and its tests. None of them is told to run the changed code in its head, which is where a stale effect, a UI-only restriction, or a lying comment hides. Pass D is. It uses the `/code-review` agents and validation step, run through `codex-agent` at `--effort high` with the same read-only fence as above. Give every call the PR title and description (or the contract) so it knows the author's intent, and tell it: *all tools work, do not test them or make exploratory calls; only call a tool that is needed.* Run D1 to D3 in parallel:
+
+   - **D1 (bug scan, `/code-review` Agent 3):** "Scan for obvious bugs. Focus only on the diff itself without reading extra context. Flag only significant bugs; ignore nitpicks and likely false positives. Do not flag issues that you cannot validate without looking at context outside of the git diff."
+   - **D2 (introduced-code scan, `/code-review` Agent 4):** "Look for problems that exist in the introduced code. This could be security issues, incorrect logic, etc. Only look for issues that fall within the changed code." Unlike `/code-review`, also let it read the code the changed lines call into (validators, writers, shared helpers) to judge them; the finding still anchors on a changed line.
+   - **D3 (CLAUDE.md compliance, `/code-review` Agents 1 and 2):** "Audit changes for CLAUDE.md compliance. Only consider CLAUDE.md files that share a file path with the file or its parents. Flag only a clear, unambiguous violation where you can quote the exact rule broken."
+
+   **One deliberate change from `/code-review`.** Its bar is "high signal only" and it tells agents not to flag "potential issues that depend on specific inputs or state". Drop that exclusion: a finding qualifies when it names a concrete sequence a user or request can produce (open the modal, pick a label before the list loads, Accept). Keep the rest of its exclusions: pre-existing issues, style nitpicks, anything a linter catches, speculation with no sequence behind it.
+
+   **Give D1 and D2 this trace list** (each item is a defect class that shipped through A–C on web-app PR 12761 and was found by a human reviewer):
+   - Every effect or async callback: what runs when the data lands, and which user input made in the meantime does it overwrite?
+   - Every value the UI hides or restricts: does the server enforce the same rule?
+   - Every fact computed in two places that must agree (keys, selectors, normalisation): is there an existing helper both can call?
+   - Every UI state against the sibling that already handles it (disabled versus hidden, loading, empty).
+   - Every comment, and every behavioural claim in the PR description, against the code it describes.
+
+   **Validate before forwarding (`/code-review` step 5).** Each D finding goes to a fresh `codex-agent` call with the PR title and description plus that one finding. Its job is to confirm with high confidence that it is a real issue, quoting the code, or refute it. Drop anything not validated. A validated finding ranks P0 if a user can hit it today, else P1. Only P0 gates `RELEASE`.
+
+   **A seat being down never skips a pass.** "Codex" here is the `codex-agent` CLI wrapper, not the codex MCP server, so an MCP "failed to connect" notice says nothing about it. If a CLI call itself fails, run the same pass on another seat (`cursor-agent` with `claude-opus-5-high`, or a fresh `Agent` subagent) and record the substitution in the readiness report.
+
+5. **Pass E: Qodo local review (optional, the one pass allowed to skip).** Qodo's `qodo review` runs the same engine as the Qodo PR bot against the local branch, so what it finds here it would otherwise post on the PR. It is an extra seat, not a replacement for A to D, so a user without Qodo loses nothing else. Probe first and skip without retrying if either fails:
+   - `command -v qodo` (not installed: report `qodo: not installed, see /sf:install`)
+   - `qodo read whoami --json` exits 0 (not logged in: report `qodo: not logged in, run qodo login`)
+
+   Run it from the worktree, in parallel with the passes above, under a long timeout or in the background (a foreground run killed by a short timeout loses the review):
+
+   ```bash
+   cd <worktree path> && qodo review --base origin/<base> --context-file - --json <<'EOF'
+   { "summary": "<2-3 sentences: what the branch changes and why, from the contract>",
+     "decisions": ["<each non-obvious choice the build made, with its reason>"] }
+   EOF
+   ```
+
+   - Always pass `--base`: the default is `origin/main`, which is wrong for web-app (`staging`). The base must be pushed; the branch need not be.
+   - Commit first. Qodo also reviews untracked files, so never write the context file, its JSON output, or any scratch file inside the worktree. Pipe the context on stdin as above and keep the output in a shell variable or outside the worktree.
+   - Leave the depth flags off (auto). Use `--deep` only for a change with a stated high-risk reason (auth, a destructive migration, a cross-service contract), never because the diff is large.
+   - Read `finding_state.introduced` and `finding_state.still_open`, not just `findings`; an empty `findings` array alone does not mean clean. If `meta.coverage.complete` is false, say so in the report.
+   - Treat each finding like a Codex or Cursor one: check it against the code before acting, rank P0/P1/P2, and only P0 gates `RELEASE`. A finding that agrees with an A to D finding counts toward the 2+ agreement rule.
+   - Errors are terminal for this run, never a reason to block the gate: `closed_preview` (org not enrolled), `repo_not_connected` (the repo is not connected to the user's Qodo workspace; fixed in Qodo's Git integration settings), auth or rate-limit errors. Quote the error's own message in the report and carry on.
+   - Re-verify rounds: run `qodo review` again with the same command. It keeps an incremental checkpoint, so the re-run only reviews what changed. Skip it if round 1 skipped Qodo or Qodo raised no P0.
+
 ## The loop
 
 ```
-checks → verify (3 passes × 3 models = 9 concurrent) → reconcile → (any P0/CHANGES REQUIRED? → fix → checks → verify) → RELEASE → ready-to-PR
+checks → verify (3 passes × 3 models = 9 concurrent, plus Pass D on Codex, plus Pass E on Qodo if available) → reconcile → (any P0/CHANGES REQUIRED? → fix → checks → verify) → RELEASE → ready-to-PR
 ```
 
 - **Sort findings by kind before dispatching.** A finding that is complex, reaches outside
@@ -117,7 +157,7 @@ checks → verify (3 passes × 3 models = 9 concurrent) → reconcile → (any P
   is the smaller diff is how scope creep gets deferred into the next PR instead of decided.
   Everything else goes straight to the fixer.
 - Send findings back to the **same** build agent via `SendMessage` if one is running (its context is intact and cheaper than a fresh spawn); otherwise apply the fixes inline. One finding per line, each with its `file:line` and which pass raised it.
-- Re-run the code gates and re-verify. To spare Cursor spend, the re-verify round is **Codex-only** by default: `codex-reply` on each Codex pass's own thread, targeting the prior P0s ("confirm each is resolved, flag regressions"). One trusted reviewer confirming the specific fixes replaces re-running the two cursor-agent seats each round — only re-run the full `gemini`/`cursor` panel when a fix was large or cross-cutting.
+- Re-run the code gates and re-verify. To spare Cursor spend, the re-verify round is **Codex-only** by default: a fresh `codex-agent` call per pass, its prompt listing the prior P0s ("confirm each is resolved, flag regressions"). One trusted reviewer confirming the specific fixes replaces re-running the two cursor-agent seats each round — only re-run the full `gemini`/`cursor` panel when a fix was large or cross-cutting.
 - **Cap at 2 rounds** by default (round 1 full panel, round 2 the Codex-only re-check). If it hasn't released, stop and report what's contested — a loop that won't converge on Pass A is usually a requirement that's wrong, not code that's wrong; a loop that won't converge on Pass C's P1/P2s usually means the reviewer is over-fitting, not that the code is — report those as left-deliberately, not as a blocker.
 
 ## On RELEASE
@@ -130,6 +170,8 @@ Emit a short readiness report and **stop** — opening the PR is the caller's jo
 - checks: lint ✓  prettier ✓  jest ✓  types ✓ (read)  comments ✓  diff-review ✓
 - code quality (Pass B): RELEASE  |  P1/P2 left deliberately: <none | …>
 - test critique (Pass C): RELEASE  |  P1/P2 left deliberately: <none | …>
+- bug hunt (Pass D): RELEASE  |  <n> findings validated, <n> refuted  |  seat substitutions: <none | …>
+- qodo (Pass E): RELEASE  |  <n> introduced, <n> still open, <n> refuted  |  coverage complete ✓  — or — skipped: <not installed | not logged in | quoted error>
 - model agreement: <n> findings raised by 2+/3, <n> by Codex only, <n> by Gemini only, <n> by Cursor only, <n> contradictions resolved (<how>)
 - verify rounds: <k>/4
 ```

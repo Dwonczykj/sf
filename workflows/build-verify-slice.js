@@ -1,6 +1,6 @@
 export const meta = {
   name: 'sf-build-verify',
-  description: 'Deterministic Phase 3 machine: per-slice plan-review -> build+tests -> capped build/verify loop, cross-vendor (Codex+Gemini+Cursor), stops at RELEASE (never pushes).',
+  description: 'Deterministic Phase 3 machine: per-slice plan-review -> build+tests -> capped build/verify loop, cross-vendor (Codex+GLM+Cursor), stops at RELEASE (never pushes).',
   whenToUse: 'After the plan/split are signed off (sf:plan done). Runs one wave of independent slices to pre-PR RELEASE. Push + CI stay in the interactive session.',
   phases: [
     { title: 'Plan review' },
@@ -17,7 +17,8 @@ export const meta = {
 //                                            // so it can't resolve this itself,
 //                                            // the calling command must pass it
 //     slices: [
-//       { slug, worktree, pkg, base }   // one WAVE of independent slices only
+//       { slug, worktree, pkg, base, planReview? }   // one WAVE of independent slices only;
+//                                        // planReview = the width-questions halt's planReview, on re-invoke
 //     ],
 //     maxRounds?: 4,                     // build<->verify cap per slice
 //     widthAnswered?: false             // set true on re-invoke, AFTER the
@@ -48,13 +49,13 @@ const WIDTH_ANSWERED = !!(args && args.widthAnswered)
 const SLICES = (args && args.slices) || []
 // Per-role models. The build agent does the real work and defaults to Opus; the
 // plan-review and verify agents are thin drivers that only shell out to the real
-// vendors (Codex/Gemini/Cursor) and parse the result, so they default cheap — that's
+// vendors (Codex/cursorAgent/Cursor) and parse the result, so they default cheap — that's
 // ~12 agents a run that don't need Opus. Resolve each role from args.models.<role>,
 // falling back to a blanket args.model (sf:build-verify's --model), then the default.
 // The caller (sf:build-verify) fills args.models from ~/.claude/sf-models.json + flags.
 const DEFAULT_MODELS = {
   planReview: 'claude-sonnet-5',
-  build: 'claude-opus-4-8',
+  build: 'claude-opus-5-5',
   tests: 'claude-sonnet-5',
   verify: 'claude-sonnet-5',
 }
@@ -80,7 +81,7 @@ if (!['anthropic', 'codex', 'cursor'].includes(PROVIDER)) {
 
 const VENDORS = [
   { id: 'codex', label: 'codex' },
-  { id: 'gemini', label: 'gemini' },
+  { id: 'cursorAgent', label: 'cursorAgent' },
   { id: 'cursor', label: 'cursor' },
 ]
 
@@ -184,21 +185,21 @@ const TEST_REQS_SCHEMA = {
 // The reasoning is the vendor's; the driver only parses. Cross-vendor diversity
 // (different model families, not three Claude agents) is the point of the panel.
 //
-// Cost: the gemini and cursor seats bill Cursor (usage-based overage); codex is on the
-// flat ChatGPT/Codex sub. So the seats default to Cursor's cheaper tiers — the gemini seat
-// to Flash, the cursor seat to gpt-5.3-codex-high (coding-tuned, far below opus-5). Override
-// per run via args.reviewModels.{gemini,cursor}. NOTE: with the cursor seat on a GPT model,
+// Cost: the cursorAgent and cursor seats bill Cursor (usage-based overage); codex is on the
+// flat ChatGPT/Codex sub. So the seats default to Cursor's cheaper tiers — the cursorAgent seat
+// to GLM 5.2, the cursor seat to gpt-5.3-codex-high (coding-tuned, far below opus-5). Override
+// per run via args.reviewModels.{cursorAgent,cursor}. NOTE: with the cursor seat on a GPT model,
 // codex + cursor are both GPT-family until the Claude seat moves to the Anthropic plan
 // (planned follow-up) — set reviewModels.cursor to claude-sonnet-5-high to keep Claude in.
-const DEFAULT_REVIEW_MODELS = { gemini: 'gemini-3.8-flash-high', cursor: 'gpt-5.3-codex-high' }
+const DEFAULT_REVIEW_MODELS = { cursorAgent: 'glm-5.2-high', cursor: 'gpt-5.3-codex-high' }
 const REVIEW_MODELS = { ...DEFAULT_REVIEW_MODELS, ...((args && args.reviewModels) || {}) }
 function vendorCommand(vendor, cwd) {
   if (vendor === 'codex') {
-    return `Call the MCP tool mcp__codex__codex with { cwd: "${cwd}", sandbox: "read-only", "approval-policy": "never", prompt: <REVIEW_PROMPT> }.`
+    return `Run in Bash (heredoc the prompt, do not interpolate): node ${args.pluginRoot}/skills/codex-agent/scripts/run-agent.mjs --sandbox read-only --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
   }
-  if (vendor === 'gemini') {
-    // ponytail: Gemini routed through cursor-agent (antigravity/agy is unreliable). Drop-in replacement, same wrapper shape.
-    return `Run in Bash (heredoc the prompt, do not interpolate): node ${args.pluginRoot}/skills/cursor-agent/scripts/run-agent.mjs --model ${REVIEW_MODELS.gemini} --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
+  if (vendor === 'cursorAgent') {
+    // GLM routed through cursor-agent, same wrapper shape as the cursor seat.
+    return `Run in Bash (heredoc the prompt, do not interpolate): node ${args.pluginRoot}/skills/cursor-agent/scripts/run-agent.mjs --model ${REVIEW_MODELS.cursorAgent} --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
   }
   // cursor
   return `Run in Bash (heredoc the prompt, do not interpolate): node ${args.pluginRoot}/skills/cursor-agent/scripts/run-agent.mjs --model ${REVIEW_MODELS.cursor} --cwd ${cwd} --timeout 900  <<'EOF'\n<REVIEW_PROMPT>\nEOF`
@@ -536,7 +537,9 @@ async function verifyRound(slice, round, priorFindings = []) {
 
 // --- per-slice loop ---------------------------------------------------------
 async function runSlice(slice) {
-  const review = await planReview(slice)
+  // On the widthAnswered re-invoke the lead passes back the halted result's planReview, so the
+  // answer does not cost a second plan review.
+  const review = (WIDTH_ANSWERED && slice.planReview) || (await planReview(slice))
 
   if (review.widthQuestions.length && !WIDTH_ANSWERED) {
     log(`slice ${slice.slug}: ${review.widthQuestions.length} width question(s) -- halting for the lead to answer`)
@@ -546,6 +549,7 @@ async function runSlice(slice) {
       halted: 'width-questions',
       widthQuestions: review.widthQuestions,
       planChangesForUser: review.forUser,
+      planReview: review,
     }
   }
   if (review.forUser.length) {
@@ -590,7 +594,7 @@ if (!SLICES.length) {
 log(
   `sf build/verify: ${SLICES.length} slice(s), maxRounds=${MAX_ROUNDS}, widthAnswered=${WIDTH_ANSWERED}, provider=${PROVIDER}, ` +
     `models={plan:${MODELS.planReview}, build:${MODELS.build}, tests:${MODELS.tests}, verify:${MODELS.verify}}, ` +
-    `reviewSeats={gemini:${REVIEW_MODELS.gemini}, cursor:${REVIEW_MODELS.cursor}} (round>1 = codex-only re-check)`,
+    `reviewSeats={cursorAgent:${REVIEW_MODELS.cursorAgent}, cursor:${REVIEW_MODELS.cursor}} (round>1 = codex-only re-check)`,
 )
 const results = await parallel(SLICES.map((s) => () => runSlice(s)))
 return { slices: results.filter(Boolean) }

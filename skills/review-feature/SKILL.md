@@ -47,7 +47,9 @@ than their absence. Note the weaker oracle and say so in the report: on a branch
 already exists, T1 has only the diff feed, so its tests are shaped by the implementation
 they check, which is exactly what running them from the plan is meant to avoid.
 
-Two things this skill adds around it:
+Never skip or shrink this stage because the PR is already open, CI is green, or a reviewer seat looks down. `pre-pr-gate` includes **Pass D** (a bug hunt copied from `/code-review`, run by `codex-agent`), and `codex-agent` is a CLI wrapper, so the codex MCP server failing to connect does not make Codex unavailable. If a seat truly fails, substitute another and say so in the report.
+
+Things this skill adds around it:
 
 - **Route complex findings through `discussion-room` first.** A finding whose fix would
   change scope beyond this PR's diff, or that has several defensible approaches, gets
@@ -61,7 +63,7 @@ Two things this skill adds around it:
   into `requirements.md` (re-sign-off if material) so every later pass tests the same
   contract; bugs ruled out of scope get one line saying so.
 - **On RELEASE, stop for the push.** Opening a PR is outward-facing: the main session
-  pushes and opens it per `create-pr` (base `staging`, assignee `Dwonczykj`) once the
+  pushes and opens it per `create-pr` (base `staging`, assignee the configured `prAssignee` (default: you)) once the
   user has given the go-ahead. If the PR is already open, push the fixes and continue.
 
 ## Stage 2 — Loop until green with no bot comments
@@ -76,6 +78,8 @@ gh api repos/Fyxer-AI/web-app/pulls/<PR>/comments --paginate \
 gh api repos/Fyxer-AI/web-app/issues/<PR>/comments --paginate \
   -q '.[] | "USER:\(.user.login)\nBODY:\(.body[0:800])\n---"'
 ```
+
+**A fix commit is a new diff.** Before pushing a fix for a thread, re-run Pass D (D1 and D2) on that fix diff. The fix for one thread on web-app PR 12761 introduced two new defects (a hidden button where sibling rows disable it, and a hand-built key that drifted from the server's selector rule). When a reply says a fix "matches the plain rows" or "same as X", quote X from the code first.
 
 For every failing check or bot comment, run **`fix-bot-comments`**' method: verify the
 claim against the real code first (real / not worth fixing / stale / wrong, with
