@@ -8,6 +8,8 @@
   start    refuse to start a ticket whose human gates have no sign-off; else print what to start
   tier     print Joey's standing model and effort override for a ticket, or null
   render   write progress.md's board from tickets.json and the open questions in events.jsonl
+  podium   read Podium's fleet state and log a `blocker` for each worker that waits on Joey, went stale,
+           has an unretried failed agent or has filled 80% of its context, once per new condition
 
 Every session writes events through this, never with an editor or a shell redirect, so each line
 parses and carries a sequence id the orchestrator's ledger uses as its cursor. Only signoffs.jsonl
@@ -19,6 +21,9 @@ import json
 import os
 import re
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 
 TYPES = ("state", "question", "answer", "blocker", "ci", "note", "model")
@@ -305,6 +310,105 @@ def render(a):
     return 0
 
 
+def podium_config():
+    """Podium's URL and admin secret from podiumctl's config.env. The token never leaves this process."""
+    conf = {}
+    try:
+        with open(os.path.join(os.environ.get("PODIUMCTL_HOME") or os.path.expanduser("~/.podium"), "config.env"),
+                  encoding="utf-8") as f:
+            for line in f:
+                key, sep, value = line.strip().partition("=")
+                if sep and not key.startswith("#"):
+                    conf[key] = value.strip().strip("'\"")
+    except OSError:
+        pass
+    host = conf.get("PODIUMCTL_BIND") or "127.0.0.1"
+    host = "127.0.0.1" if host in ("0.0.0.0", "::") else f"[{host}]" if ":" in host else host
+    return f"http://{host}:{conf.get('PODIUMCTL_PORT') or 4317}", conf.get("PODIUM_TOKEN") or None
+
+
+def podium_match(tickets, sessions):
+    """(ticket, session) for each live Podium session working in a ticket's worktree or on its branch.
+
+    Podium's session id is Claude Code's own session uuid, while a ticket's sessionId is the desktop app's
+    local_… id, so the two never meet; the worktree path and branch are what both sides record."""
+    pairs = []
+    for s in sessions:
+        if s.get("status") == "done":
+            continue
+        git = s.get("git") or {}
+        where = [os.path.realpath(os.path.expanduser(p)) for p in (git.get("worktreePath"), s.get("cwd")) if p]
+        for t in tickets:
+            wt = t.get("worktree") and os.path.realpath(os.path.expanduser(t["worktree"]))
+            if (wt and any(p == wt or p.startswith(wt + os.sep) for p in where)
+                    or t.get("branch") and t["branch"] == git.get("branch")):
+                pairs.append((t, s))
+                break
+    return pairs
+
+
+def podium_conditions(s):
+    """{key: what} for each condition that needs someone. A key changes only when its condition does."""
+    out = {}
+    if s.get("status") == "waiting" and s.get("waitReason") == "permission":
+        # Only a prompt: waitReason "input" is a turn that ended, which is how an idle worker looks.
+        out["waiting"] = ("waits on Joey at a prompt" + (f" ({s['waitNote'][:120]})" if s.get("waitNote") else "")
+                          + "; Joey answers it there or in Podium, never the orchestrator")
+    if s.get("status") == "stale":
+        out["stale"] = f"is stale, no report for {s.get('secondsSinceSeen')}s"
+    failed = [a for a in s.get("agents") or []
+              if a.get("status") == "failed" and not (a.get("failure") or {}).get("retriedAs")]
+    if failed:
+        out["failing:" + ",".join(sorted(str(a.get("id")) for a in failed))] = "is failing: " + "; ".join(
+            f"{str(a.get('description') or 'agent')[:60]} ({(a.get('failure') or {}).get('class', 'Unknown')})"
+            for a in failed[:3])
+    percent = (s.get("context") or {}).get("percent")
+    if percent is not None and percent >= 80:
+        out["context"] = f"has {percent:.0f}% of its context window used"
+    return out
+
+
+def podium(a):
+    if not os.path.isdir(a.dir):
+        return fail("podium", f"--dir {a.dir} is not a directory")
+    doc, error = load_tickets(a.dir)
+    if error:
+        return fail("podium", error)
+    url, token = podium_config()
+    req = urllib.request.Request(url + "/api/fleet/state", headers={"X-Podium-Token": token} if token else {})
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=5) as r:
+            sessions = json.load(r)["sessions"]
+    except urllib.error.HTTPError as e:
+        print(f"room podium: Podium at {url} refused the request (HTTP {e.code}); carrying on without it")
+        return 0
+    except (OSError, ValueError, KeyError, TypeError):
+        print(f"room podium: Podium is not answering at {url}; carrying on without it")
+        return 0
+    path = os.path.join(a.dir, "podium-seen.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            seen = json.load(f)
+    except (OSError, ValueError):
+        seen = {}
+    pairs, now_seen, logged = podium_match(doc["tickets"], sessions), {}, 0
+    for t, s in pairs:
+        conditions = podium_conditions(s)
+        now_seen[s["id"]] = sorted(conditions)
+        for key, what in conditions.items():
+            if key in seen.get(s["id"], []):
+                continue
+            note = f"Podium: {t.get('session') or t['id']} {what}. {url}/#/history?open={urllib.parse.quote(s['id'])}"
+            print(event(a.dir, t["id"], "podium", "blocker", " ".join(note.split())[:MAX_NOTE]))
+            logged += 1
+    # Only conditions still present are kept, so one that clears and comes back is logged again.
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(now_seen, f)
+    os.replace(path + ".tmp", path)
+    print(f"room podium: {len(sessions)} live sessions, {len(pairs)} matched to tickets, {logged} new blockers")
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="room")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -345,9 +449,12 @@ def main(argv=None):
     cmd("render", "write progress.md from tickets.json", ticket=False)
     tp = cmd("tier", "print Joey's standing tier override for a ticket as JSON, or null", ticket=False)
     tp.add_argument("ticket")
+    cmd("podium", "log a blocker for each worker Podium shows waiting, stale, failing or near its context limit",
+        ticket=False)
 
     a = p.parse_args(argv)
-    return {"log": log, "ask": ask, "signoff": signoff, "start": start, "render": render, "tier": tier}[a.cmd](a)
+    return {"log": log, "ask": ask, "signoff": signoff, "start": start, "render": render, "tier": tier,
+            "podium": podium}[a.cmd](a)
 
 
 if __name__ == "__main__":

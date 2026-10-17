@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Check the room CLI and the room-writers hook. Run: python3 scripts/room_test.py"""
+import http.server
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOM = os.path.join(HERE, "room")
@@ -167,5 +169,93 @@ with tempfile.TemporaryDirectory() as d:
                 ["--tier", "claude-opus-5-5 high", "--message"]):
         assert run(d, "--ticket", "s1", *bad, "--quote", "x", cmd="signoff").returncode != 0, bad
     assert run(os.path.join(d, "missing"), "s1", cmd="tier").returncode != 0
+
+class Podium(http.server.BaseHTTPRequestHandler):
+    """A stub of Podium's GET /api/fleet/state that wants X-Podium-Token: t0ken."""
+    sessions = []
+
+    def do_GET(self):
+        ok = self.path == "/api/fleet/state" and self.headers.get("X-Podium-Token") == "t0ken"
+        body = json.dumps({"sessions": Podium.sessions} if ok else {"ok": False}).encode()
+        self.send_response(200 if ok else 401)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_):
+        pass
+
+
+def podium_session(id_, status="running", cwd="~/elsewhere", branch=None, wt=None, **extra):
+    return {"id": id_, "status": status, "cwd": cwd, "waitReason": None, "waitNote": None, "secondsSinceSeen": 1,
+            "context": {"percent": 20.0}, "agents": [],
+            "git": {"branch": branch, "worktreePath": wt}, **extra}
+
+
+with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as home:
+    server = http.server.HTTPServer(("127.0.0.1", 0), Podium)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def conf(port, token="t0ken"):
+        with open(os.path.join(home, "config.env"), "w") as f:
+            f.write(f"PODIUMCTL_MODE=standalone\nPODIUMCTL_PORT={port}\nPODIUMCTL_BIND=127.0.0.1\nPODIUM_TOKEN={token}\n")
+
+    def podium():
+        r = subprocess.run([sys.executable, ROOM, "podium", "--dir", d], capture_output=True, text=True,
+                           env={**os.environ, "PODIUMCTL_HOME": home})
+        assert r.returncode == 0, r.stderr
+        return r.stdout
+
+    def blockers():
+        return [e for e in (json.loads(l) for l in open(os.path.join(d, "events.jsonl"))) if e["role"] == "podium"]
+
+    wts = {t: os.path.join(d, "wt", t) for t in ("s1", "s2", "s3")}
+    with open(os.path.join(d, "tickets.json"), "w") as f:
+        json.dump({"slug": "demo", "tickets": [
+            {"id": "s1", "title": "one", "state": "BUILDING", "worktree": wts["s1"], "branch": "joey/s1", "session": "demo-s1"},
+            {"id": "s2", "title": "two", "state": "PUSHED", "branch": "joey/s2"},
+            {"id": "s3", "title": "three", "state": "BUILDING", "worktree": wts["s3"], "branch": "joey/s3"},
+            {"id": "s4", "title": "four", "state": "BUILDING", "branch": "joey/s4"},
+        ]}, f)
+    failed = {"id": "a1", "status": "failed", "description": "Run jest", "failure": {"class": "Tool error", "retriedAs": None}}
+    retried = {"id": "a2", "status": "failed", "description": "Lint", "failure": {"class": "Tool error", "retriedAs": "a3"}}
+    Podium.sessions = [
+        podium_session("u-s1", "waiting", cwd=wts["s1"], wt=wts["s1"], waitReason="permission",
+                       waitNote="Claude needs your permission to use Bash"),          # waiting, by worktree
+        podium_session("u-s2", "stale", branch="joey/s2", secondsSinceSeen=40),       # stale, by branch
+        podium_session("u-s3", cwd=os.path.join(wts["s3"], "app"), agents=[failed, retried]),  # failing, by cwd
+        podium_session("u-s4", branch="joey/s4", context={"percent": 84.6}),           # context
+        podium_session("u-idle", "waiting", branch="joey/s4", waitReason="input"),     # end of turn: not a blocker
+        podium_session("u-other", "waiting", cwd="~/other", branch="main", waitReason="permission"),  # unmatched
+        podium_session("u-gone", "done", cwd=wts["s1"], wt=wts["s1"], context={"percent": 99.0}),  # ended
+    ]
+    conf(server.server_port)
+    out = podium()
+    assert "7 live sessions, 5 matched to tickets, 4 new blockers" in out, out
+    got = {e["ticket"]: e["note"] for e in blockers()}
+    assert set(got) == {"s1", "s2", "s3", "s4"} and all(e["type"] == "blocker" for e in blockers()), got
+    assert got["s1"].startswith("Podium: demo-s1 waits on Joey at a prompt (Claude needs your permission to use Bash)")
+    assert got["s1"].endswith(f"http://127.0.0.1:{server.server_port}/#/history?open=u-s1"), got["s1"]
+    assert "is stale, no report for 40s" in got["s2"] and "Run jest (Tool error)" in got["s3"] and "Lint" not in got["s3"]
+    assert "85% of its context window" in got["s4"]
+    assert "t0ken" not in out and "t0ken" not in open(os.path.join(d, "events.jsonl")).read()
+
+    # An unchanged state logs nothing; a new condition on a session logs only that one; one that clears and
+    # comes back is logged again.
+    assert "0 new blockers" in podium() and len(blockers()) == 4
+    Podium.sessions[3]["status"] = "stale"
+    Podium.sessions[0].update(status="running", waitReason=None)
+    assert "1 new blockers" in podium() and blockers()[-1]["ticket"] == "s4" and "stale" in blockers()[-1]["note"]
+    Podium.sessions[0].update(status="waiting", waitReason="permission")
+    assert "1 new blockers" in podium() and blockers()[-1]["ticket"] == "s1"
+
+    # A refused token or a server that is down: one line, exit 0, nothing logged.
+    conf(server.server_port, token="wrong")
+    assert podium().startswith(f"room podium: Podium at http://127.0.0.1:{server.server_port} refused the request (HTTP 401)")
+    server.shutdown()
+    server.server_close()
+    conf(server.server_port)
+    assert "Podium is not answering at" in podium()
+    assert len(blockers()) == 6
 
 print("room_test: ok")
