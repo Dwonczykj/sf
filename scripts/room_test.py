@@ -170,6 +170,54 @@ with tempfile.TemporaryDirectory() as d:
         assert run(d, "--ticket", "s1", *bad, "--quote", "x", cmd="signoff").returncode != 0, bad
     assert run(os.path.join(d, "missing"), "s1", cmd="tier").returncode != 0
 
+with tempfile.TemporaryDirectory() as d:
+    # join: a session Joey started by hand adds itself. One event, role joined; tickets.json is never written.
+    sid = "local_0a1b2c3d-0a1b-0a1b-0a1b-0a1b2c3d4e5f"
+    tickets_path = os.path.join(d, "tickets.json")
+    with open(tickets_path, "w") as f:
+        json.dump({"slug": "demo", "tickets": [{"id": "s1", "title": "one", "state": "BUILDING", "session": "demo-s1"}]}, f)
+    before = open(tickets_path).read()
+
+    def join(*args):
+        return run(d, *args, cmd="join")
+
+    def events():
+        return [json.loads(l) for l in open(os.path.join(d, "events.jsonl"))] if os.path.exists(os.path.join(d, "events.jsonl")) else []
+
+    r = join("--ticket", "s1", "--name", "my-session", "--session-id", sid)
+    assert r.returncode == 0, r.stderr
+    e = events()[-1]
+    assert (e["type"], e["role"], e["ticket"], e["name"], e["sessionId"]) == ("join", "joined", "s1", "my-session", sid), e
+    r = join("--ticket", "new:Fix the retry", "--name", "cli-session")
+    assert r.returncode == 0, r.stderr
+    e = events()[-1]
+    assert e["ticket"] == "all" and e["newTitle"] == "Fix the retry" and "sessionId" not in e, e
+    assert join("--ticket", "watching", "--name", "looker", "--session-id", sid).returncode == 0
+    assert events()[-1]["ticket"] == "all" and "newTitle" not in events()[-1]
+    n = len(events())
+    for args in (("--ticket", "s1", "--name", "x", "--session-id", "local_nothex"),
+                 ("--ticket", "s1", "--name", "x", "--session-id", "0a1b2c3d-0a1b-0a1b-0a1b-0a1b2c3d4e5f"),
+                 ("--ticket", "s9", "--name", "x"),
+                 ("--ticket", "new:", "--name", "x"),
+                 ("--ticket", "new:   ", "--name", "x"),
+                 ("--ticket", "new:two\nlines", "--name", "x"),
+                 ("--ticket", "watching", "--name", "bad name")):
+        assert join(*args).returncode != 0, f"accepted {args}"
+    assert run(os.path.join(d, "missing"), "--ticket", "watching", "--name", "x", cmd="join").returncode != 0
+    assert len(events()) == n and open(tickets_path).read() == before
+    # `log` cannot forge a join, and join needs no tickets.json for new: or watching.
+    assert run(d, "--ticket", "s1", "--role", "joined", "--type", "join", "--note", "x").returncode != 0
+    with tempfile.TemporaryDirectory() as bare:
+        assert run(bare, "--ticket", "watching", "--name", "x", cmd="join").returncode == 0
+        assert run(bare, "--ticket", "s1", "--name", "x", cmd="join").returncode != 0
+    # hook: any session may run `room join`, like `room log`; signoff and render stay orchestrator-only.
+    worker = os.path.join(d, "worker.jsonl")
+    open(worker, "w").write('{"message":{"content":[{"type":"text","text":"hand-started session"}]}}\n')
+    assert not hook("Bash", {"command": f"python3 {d}/room join --dir {d} --ticket watching --name x"}, worker)
+    assert not hook("Bash", {"command": f"cd {d} && ./room join --dir . --ticket s1 --name x"}, worker)
+    assert hook("Bash", {"command": f"python3 {d}/room render --dir {d}"}, worker)
+    assert hook("Edit", {"file_path": tickets_path}, worker)
+
 class Podium(http.server.BaseHTTPRequestHandler):
     """A stub of Podium's GET /api/fleet/state that wants X-Podium-Token: t0ken."""
     sessions = []

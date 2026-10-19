@@ -11,6 +11,7 @@ A room dir is a dir holding events.jsonl. In one:
 - `room signoff` and `room render` run from Bash: orchestrator only. Only a command that runs the CLI
   counts (`room ...`, `<path>/room ...`, `python3 <path>/room ...`), never text that names it in a quote,
   a commit message or a heredoc. `bash -c '...'` and `eval` hide an invocation from it.
+  `room log` and `room join` (a session Joey started by hand adding itself) are open to every session.
 
 Bash is best effort. It catches redirects, `tee`, `sed -i`, `cp`, `mv`, `ln`, `install`, `truncate` and
 `rm` naming one of these files by a literal path. It can't catch a path held in a variable, a script or `python -c` that

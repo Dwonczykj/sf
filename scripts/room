@@ -7,6 +7,8 @@
            the orchestrator with Joey's words)
   start    refuse to start a ticket whose human gates have no sign-off; else print what to start
   tier     print Joey's standing model and effort override for a ticket, or null
+  join     append a `join` event (role `joined`): a session Joey started by hand adds itself to the run
+           (every session; never writes tickets.json, the orchestrator folds it in)
   render   write progress.md's board from tickets.json and the open questions in events.jsonl
   podium   read Podium's fleet state and log a `blocker` for each worker that waits on Joey, went stale,
            has an unretried failed agent or has filled 80% of its context, once per new condition
@@ -26,7 +28,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-TYPES = ("state", "question", "answer", "blocker", "ci", "note", "model")
+TYPES = ("state", "question", "answer", "blocker", "ci", "note", "model", "join")
 # Board states from start-feature's "Board format". A state event's note starts with one of these.
 STATES = ("PROBE", "NOT STARTED", "BUILDING", "WAITING ON JOEY", "LOCAL", "PUSHED", "DRAFT PR", "PR",
           "COMPLEXITY REVIEW", "DONE", "MERGED")
@@ -35,6 +37,7 @@ GATES = ("framed", "requirements", "grilled", "impact", "steward", "split", "spe
 FIELDS = ("id", "title", "kind", "queue", "state", "after", "stacksOn", "worktree", "branch", "pr", "sha",
           "ci", "session", "sessionId", "needs", "gates", "note", "model", "effort", "complexity", "blast", "budget")
 NAME = re.compile(r"^[A-Za-z0-9][\w.-]{0,63}$")
+SESSION_ID = re.compile(r"^local_[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 SHA = re.compile(r"^[0-9a-f]{7,40}$")
 TIER = re.compile(r"^claude-[a-z0-9.-]+ (low|medium|high|xhigh|max)$")
 MAX_NOTE = 500
@@ -107,6 +110,30 @@ def log(a):
     if error:
         return fail("log", error)
     print(event(a.dir, a.ticket, a.role, a.type, note, a.sha))
+    return 0
+
+
+def join(a):
+    error = None if os.path.isdir(a.dir) else f"--dir {a.dir} is not a directory"
+    if not error and not NAME.match(a.name):
+        error = f"--name {a.name!r} must be letters, digits, '.', '_' or '-'"
+    if not error and a.session_id is not None and not SESSION_ID.match(a.session_id):
+        error = f"--session-id {a.session_id!r} must look like local_<uuid>"
+    extra, ticket = {}, "all"
+    if not error and a.ticket.startswith("new:"):
+        title = a.ticket[4:].strip()
+        error = one_line(title, "the title after new:", 200)
+        extra = {"newTitle": title}
+    elif not error and a.ticket != "watching":
+        doc, error = load_tickets(a.dir)
+        if not error and a.ticket not in [t["id"] for t in doc["tickets"]]:
+            error = f"no ticket {a.ticket!r} in tickets.json; use new:<title> or watching"
+        ticket = a.ticket
+    if error:
+        return fail("join", error)
+    what = "a new ticket: " + extra["newTitle"] if extra else "watching" if a.ticket == "watching" else a.ticket
+    extra = {"name": a.name, **({"sessionId": a.session_id} if a.session_id else {}), **extra}
+    print(event(a.dir, ticket, "joined", "join", f"{a.name} joined: {what}", None, **extra))
     return 0
 
 
@@ -422,9 +449,13 @@ def main(argv=None):
 
     lp = cmd("log", "append one event to <dir>/events.jsonl")
     lp.add_argument("--role", required=True, help="e.g. build, ci, orchestrator")
-    lp.add_argument("--type", required=True, choices=TYPES)
+    lp.add_argument("--type", required=True, choices=[t for t in TYPES if t != "join"])
     lp.add_argument("--sha", help="head SHA, when there is one")
     lp.add_argument("--note", required=True, help="one line; a state note starts with the state")
+
+    jp = cmd("join", "a session started by hand adds itself to the run")
+    jp.add_argument("--name", required=True, help="the session's name, like a ticket's `session`")
+    jp.add_argument("--session-id", help="the app's local_<uuid> id; leave out when the session has none")
 
     ap = cmd("ask", "append a question event shaped like AskUserQuestion")
     ap.add_argument("--header", required=True, help="chip label, at most 12 characters")
@@ -454,7 +485,7 @@ def main(argv=None):
 
     a = p.parse_args(argv)
     return {"log": log, "ask": ask, "signoff": signoff, "start": start, "render": render, "tier": tier,
-            "podium": podium}[a.cmd](a)
+            "podium": podium, "join": join}[a.cmd](a)
 
 
 if __name__ == "__main__":
