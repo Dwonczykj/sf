@@ -58,6 +58,7 @@ All commands share one state contract: `.scratch/<slug>/` holding `progress.md` 
 | `sf:ci-green [PR]` | Just the CI/bot loop: `fix-bot-comments` until all checks green + threads resolved, asking before any fix that adds more complexity than the feature warrants. |
 | `sf:fix-pr [PR]` | Same green-gate as `sf:ci-green`, but reviews the diff on two review seats *before* each push so fewer bot round-trips are needed. |
 | `sf:view-agents` | Open the local agent-team dashboard (starts its dev server on :7777 first if needed). |
+| `sf:room [start\|stop\|status]` | Start, stop or check the agent-team Build Room (:7777) and Podium (:4317), and log each one's memory once a minute (`scripts/roomui`). |
 
 The phase commands delegate to skills bundled with this plugin under `skills/` — `gather-requirements`, `pr-split-audit`, `solve-in-worktrees`, `review-feature`, `pre-pr-gate`, `fix-bot-comments`, `discussion-room`, `create-branch`, `create-pr`, `review-seat` (with its `codex-agent` and `cursor-agent` adapters), `query-data`, `make-sheet`, `check-ui`, `diff-review`, `commit-hang-guard`, `lint-in-ignored-worktree`, `linear-update-issue-on-pr-merge`, `prune-merged-worktrees`, `setup-worktree-webapp`, `get-worktree`, `repo-instructions`, `steward`, `start-feature` itself. One implementation each, no forks. `grill-me` is the one exception: it's not bundled here because it already ships in the separate `anthropic-skills` plugin, which most installs already have.
 

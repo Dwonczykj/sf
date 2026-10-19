@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""Start, stop and watch the two local UIs behind sf:orchestrate: agent-team (Build Room) and Podium.
+
+  roomui start    start whichever is down, plus the memory sampler; never restart one that is up
+  roomui stop     stop both servers and the sampler
+  roomui status   running or not, pid, RSS, CPU, uptime, URL, and the last 24 hours of samples
+
+Environment: ROOMUI_AGENT_TEAM_DIR (default ~/FyxerGh/agent-team), ROOMUI_PODIUM_DIR (default
+~/FyxerGh/podium), ROOMUI_STATE_DIR (pid files and logs, default ~/FyxerGh/build-room).
+
+A process is only ever signalled after its command line says it is one of the two servers (or the
+sampler). Podium is stopped through `podiumctl stop`. Nothing here reads Podium's token or config.env,
+and podiumctl's own output is not printed on success, because its first start can show the token.
+"""
+import argparse
+import os
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+
+HOME = os.path.expanduser("~")
+STATE = os.environ.get("ROOMUI_STATE_DIR") or os.path.join(HOME, "FyxerGh", "build-room")
+AGENT_TEAM = os.path.realpath(os.environ.get("ROOMUI_AGENT_TEAM_DIR") or os.path.join(HOME, "FyxerGh", "agent-team"))
+PODIUM = os.path.realpath(os.environ.get("ROOMUI_PODIUM_DIR") or os.path.join(HOME, "FyxerGh", "podium"))
+SERVERS = {
+    "agent-team": {"port": 7777, "url": "http://127.0.0.1:7777/room", "env": "ROOMUI_AGENT_TEAM_DIR"},
+    "podium": {"port": 4317, "url": "http://127.0.0.1:4317/#/", "env": "ROOMUI_PODIUM_DIR"},
+}
+PIDFILE = {"agent-team": "agent-team.pid", "sampler": "roomui-sampler.pid"}
+LOG = {"agent-team": "agent-team.log", "samples": "roomui-samples.log"}
+SAMPLE_EVERY = 60
+MAX_SAMPLES = 20160  # a week of two servers a minute; the oldest lines go first
+TS = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def sh(args, timeout=10):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def path(kind, name):
+    return os.path.join(STATE, (PIDFILE if kind == "pid" else LOG)[name])
+
+
+def parse_etime(text):
+    """ps etime, [[dd-]hh:]mm:ss, to seconds."""
+    days, _, rest = text.strip().rpartition("-")
+    secs = 0
+    for part in rest.split(":"):
+        secs = secs * 60 + int(part)
+    return secs + int(days or 0) * 86400
+
+
+def parse_ps(text):
+    """One `ps -o pid=,etime=,rss=,pcpu=` line to a dict, or None."""
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) == 4 and f[0].isdigit():
+            try:
+                return {"pid": int(f[0]), "up": parse_etime(f[1]), "rss": int(f[2]) / 1024, "cpu": float(f[3])}
+            except ValueError:
+                pass
+    return None
+
+
+def parse_sample(line):
+    """`<ISO time> <name> <pid> <rss MB> <cpu %>` to (datetime, name, rss), or None."""
+    f = line.split()
+    try:
+        return datetime.strptime(f[0], TS).replace(tzinfo=timezone.utc), f[1], float(f[3])
+    except (ValueError, IndexError):
+        return None
+
+
+def summarise(lines, now, hours=24):
+    """{name: (samples, peak MB, average MB)} over the last `hours`."""
+    seen = {}
+    for line in lines:
+        s = parse_sample(line)
+        if s and now - timedelta(hours=hours) <= s[0] <= now:
+            seen.setdefault(s[1], []).append(s[2])
+    return {n: (len(v), max(v), sum(v) / len(v)) for n, v in seen.items()}
+
+
+def stats(pid):
+    return parse_ps(sh(["ps", "-p", str(pid), "-o", "pid=,etime=,rss=,pcpu="]))
+
+
+def command(pid):
+    return sh(["ps", "-p", str(pid), "-o", "command="]).strip()
+
+
+def cwd(pid):
+    for line in sh(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"]).splitlines():
+        if line.startswith("n"):
+            return os.path.realpath(line[1:])
+    return None
+
+
+def is_server(name, pid):
+    cmd = command(pid)
+    if name == "agent-team":
+        return "server.mjs" in cmd.split() and cwd(pid) == AGENT_TEAM
+    return os.path.join(PODIUM, "server", "dist", "index.js") in cmd
+
+
+def is_sampler(pid):
+    cmd = command(pid)
+    return "roomui" in cmd and cmd.endswith(" sampler")
+
+
+def find(name):
+    """('up', pid), ('down', None) or ('busy', pids): the port is held by something that is not ours."""
+    pids = [int(p) for p in sh(["lsof", "-nP", f"-iTCP:{SERVERS[name]['port']}", "-sTCP:LISTEN", "-t"]).split()]
+    if not pids:
+        return "down", None
+    ours = [p for p in pids if is_server(name, p)]
+    return ("up", ours[0]) if ours else ("busy", pids)
+
+
+def read_pid(name):
+    try:
+        with open(path("pid", name)) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def sampler_pid():
+    pid = read_pid("sampler")
+    return pid if pid and stats(pid) and is_sampler(pid) else None
+
+
+def missing(name):
+    d = AGENT_TEAM if name == "agent-team" else PODIUM
+    marker = "server.mjs" if name == "agent-team" else os.path.join("bin", "podiumctl")
+    if os.path.exists(os.path.join(d, marker)):
+        return None
+    return f"{name}: not found at {d}; set {SERVERS[name]['env']} to its repo"
+
+
+def stop_pid(pid, what):
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(50):
+        if not stats(pid):
+            return f"stopped {what} (pid {pid})"
+        time.sleep(0.1)
+    return f"sent SIGTERM to {what} (pid {pid}) but it is still running"
+
+
+def start_agent_team():
+    err = missing("agent-team")
+    if err:
+        return err
+    os.makedirs(STATE, exist_ok=True)
+    with open(path("log", "agent-team"), "ab") as log:
+        subprocess.Popen(["npm", "start"], cwd=AGENT_TEAM, stdin=subprocess.DEVNULL, stdout=log,
+                         stderr=subprocess.STDOUT, start_new_session=True)
+    for _ in range(100):
+        state, pid = find("agent-team")
+        if state == "up":
+            with open(path("pid", "agent-team"), "w") as f:
+                f.write(f"{pid}\n")
+            return f"agent-team: started (pid {pid}); log {path('log', 'agent-team')}"
+        time.sleep(0.2)
+    return f"agent-team: did not come up in 20s; see {path('log', 'agent-team')}"
+
+
+def podiumctl(*args):
+    out = subprocess.run([os.path.join(PODIUM, "bin", "podiumctl"), *args], capture_output=True, text=True,
+                         timeout=180)
+    return out.returncode, (out.stdout + out.stderr)
+
+
+def podiumctl_failed(what, code, text):
+    tail = [l for l in text.splitlines() if "token" not in l.lower()][-5:]
+    return f"podium: `podiumctl {what}` failed ({code})\n  " + "\n  ".join(tail)
+
+
+def start_podium():
+    err = missing("podium")
+    if err:
+        return err
+    code, text = podiumctl("start", "--mode", "standalone")
+    state, pid = find("podium")
+    if code or state != "up":
+        return podiumctl_failed("start", code, text)
+    return f"podium: started (pid {pid})"
+
+
+def start_sampler():
+    if sampler_pid():
+        return f"sampler: already running (pid {sampler_pid()})"
+    os.makedirs(STATE, exist_ok=True)
+    p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "sampler"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    with open(path("pid", "sampler"), "w") as f:
+        f.write(f"{p.pid}\n")
+    return f"sampler: started (pid {p.pid}); log {path('log', 'samples')}"
+
+
+def cmd_start():
+    out = []
+    for name, starter in (("agent-team", start_agent_team), ("podium", start_podium)):
+        state, pid = find(name)
+        if state == "up":
+            out.append(f"{name}: already running (pid {pid})")
+        elif state == "busy":
+            out.append(f"{name}: port {SERVERS[name]['port']} is held by another process (pid "
+                       f"{', '.join(map(str, pid))}); not starting, not touching it")
+        else:
+            out.append(starter())
+    out.append(start_sampler())
+    out += ["", f"Build Room  {SERVERS['agent-team']['url']}", f"Podium      {SERVERS['podium']['url']}"]
+    print("\n".join(out))
+    return 0
+
+
+def cmd_stop():
+    out = []
+    pid = sampler_pid()
+    out.append(stop_pid(pid, "sampler") if pid else "sampler: not running")
+    state, pid = find("agent-team")
+    if state == "up":
+        out.append(stop_pid(pid, "agent-team"))
+    elif state == "busy":
+        out.append(f"agent-team: port 7777 is held by another process (pid {', '.join(map(str, pid))}); left alone")
+    else:
+        out.append("agent-team: not running")
+    for name in ("agent-team", "sampler"):
+        if not (stats(read_pid(name) or 0)):
+            try:
+                os.remove(path("pid", name))
+            except OSError:
+                pass
+    state, pid = find("podium")
+    if state == "busy":
+        out.append(f"podium: port 4317 is held by another process (pid {', '.join(map(str, pid))}); left alone")
+    elif state == "down":
+        out.append("podium: not running")
+    elif missing("podium"):
+        out.append(missing("podium"))
+    else:
+        code, text = podiumctl("stop")
+        out.append(f"stopped podium (pid {pid})" if not code and find("podium")[0] == "down"
+                   else podiumctl_failed("stop", code, text))
+    print("\n".join(out))
+    return 0
+
+
+def duration(secs):
+    d, r = divmod(secs, 86400)
+    h, r = divmod(r, 3600)
+    m, s = divmod(r, 60)
+    return f"{d}d {h}h {m}m" if d else f"{h}h {m:02d}m" if h else f"{m}m {s:02d}s"
+
+
+def read_samples():
+    try:
+        with open(path("log", "samples")) as f:
+            return f.read().splitlines()
+    except OSError:
+        return []
+
+
+def cmd_status():
+    hist = summarise(read_samples(), datetime.now(timezone.utc))
+    out = []
+    for name, spec in SERVERS.items():
+        state, pid = find(name)
+        s = stats(pid) if state == "up" else None
+        if s:
+            out.append(f"{name:<11} running  pid {pid}  {s['rss']:.1f} MB  cpu {s['cpu']:.1f}%  up {duration(s['up'])}")
+        elif state == "busy":
+            out.append(f"{name:<11} port {spec['port']} held by another process (pid {', '.join(map(str, pid))})")
+        else:
+            out.append(f"{name:<11} not running" + (f"  ({missing(name)})" if missing(name) else ""))
+        out.append(f"{'':<11} {spec['url']}")
+        n, peak, avg = hist.get(name, (0, 0, 0))
+        out.append(f"{'':<11} last 24h: peak {peak:.1f} MB, avg {avg:.1f} MB ({n} samples)" if n
+                   else f"{'':<11} last 24h: no history yet")
+    pid = sampler_pid()
+    out.append(f"{'sampler':<11} " + (f"running  pid {pid}" if pid else "not running (roomui start begins it)"))
+    print("\n".join(out))
+    return 0
+
+
+def sample_once():
+    now = datetime.now(timezone.utc).strftime(TS)
+    lines = []
+    for name in SERVERS:
+        state, pid = find(name)
+        s = stats(pid) if state == "up" else None
+        if s:
+            lines.append(f"{now} {name} {pid} {s['rss']:.1f} {s['cpu']:.1f}\n")
+    if lines:
+        with open(path("log", "samples"), "a") as f:
+            f.write("".join(lines))
+        kept = read_samples()
+        if len(kept) > MAX_SAMPLES:
+            tmp = path("log", "samples") + ".tmp"
+            with open(tmp, "w") as f:
+                f.write("\n".join(kept[-MAX_SAMPLES:]) + "\n")
+            os.replace(tmp, path("log", "samples"))
+
+
+def cmd_sampler():
+    while True:
+        sample_once()
+        time.sleep(SAMPLE_EVERY - time.time() % SAMPLE_EVERY)
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("action", choices=("start", "stop", "status", "sampler"), nargs="?", default="status")
+    sys.exit({"start": cmd_start, "stop": cmd_stop, "status": cmd_status, "sampler": cmd_sampler}[ap.parse_args().action]())
