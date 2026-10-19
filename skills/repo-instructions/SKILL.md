@@ -25,6 +25,8 @@ at the two moments that matter: stated at planning, checked post-build.
 3. If it exists, read it. Each `###` block is one rule with **When / Then / Check**
    lines. Treat the whole file as prose; there is nothing to parse. A `## Blast risk` section is
    not a rule: the `steward` skill reads it (see "Blast risk" below), and planning and build leave it out.
+   An `## Impact data map` section is not a rule either: it names the repo's data map file (and its
+   release tag glob), which `size-change-impact`'s `method.md` and `measure-change-impact` read.
 
 ## Consume — per phase
 

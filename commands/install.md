@@ -36,7 +36,7 @@ Logins (`codex login`, `agent login`, `gcloud auth login`, `gws auth login`) are
  "data": "gcloud", "sheets": "gws", "ui": "claude-in-chrome"}
 ```
 
-`reviewers` holds the passing choices (`claude`, `codex`, `cursor`, `gemini`); `otherReviewers` is `[]` without an Other. `data`, `sheets` and `ui` are `null` for None or a dropped choice; `ui` is one of `claude-in-chrome`, `browser-pane`, `playwright`. Write the whole file, then read it back.
+`reviewers` holds the passing choices (`claude`, `codex`, `cursor`, `gemini`); `otherReviewers` is `[]` without an Other. `data`, `sheets` and `ui` are `null` for None or a dropped choice; `ui` is one of `claude-in-chrome`, `browser-pane`, `playwright`. Keep `slackUserId` from the old file if it has one (step 4 asks for it). Write the whole file, then read it back.
 
 Then print what each port will use and what it falls back to:
 
@@ -52,6 +52,8 @@ A run started in the cloud has none of these logins; every port then falls back,
 1. **OpenSpec CLI** — run `openspec --version`. If missing: give me `npm install -g openspec`. No login needed. This is what the optional Phase 2.5 spec step (`start-feature` / `plan` / `adopt` / `investigate`) depends on for `openspec propose` / `archive` / `sync`. Per-repo setup (`openspec init` + `openspec update`, which generates the `openspec-propose` / `openspec-archive-change` / … skills into that repo) happens lazily the first time a run in that repo needs a spec — not here.
 
 2. **Qodo CLI (optional)**: run `qodo --version`. If missing, give me the official installer, `curl -fsSL https://get.qodo.ai | sh` (docs: https://docs.qodo.ai/agentic-toolbox/cli), then tell me to run `qodo login` myself (browser auth). Confirm with `qodo read whoami --json` (exit 0, shows an email). This powers `pre-pr-gate` Pass E, a local run of the Qodo PR reviewer before the PR opens. Without it the gate skips Pass E and everything else runs as normal, so a missing Qodo is a note, not a failure. One thing the CLI can't check up front: the repo must be connected to my Qodo workspace (Qodo's Git integration settings). If it isn't, the first review fails with `repo_not_connected`, and the gate reports that and carries on.
+
+3. **Slack user id (optional)**: one `AskUserQuestion`, header `Slack`: **"Which Slack user should `sf:measure-change-impact` DM its follow-up results to? Type your Slack member id (Profile → ⋮ → Copy member ID) under Other. Now: `<current or blank>`."** Options: **Keep `<current>`** and **Clear it (desktop notification only)** when it is set, else **Skip (desktop notification only)** and **Type my member id under Other**. Write it to `~/.claude/sf-tools.json` as `slackUserId`, changing only that key, or remove the key on skip or clear. Without it, the follow-up task notifies with `osascript` only.
 
 Then print these, in this order, before step 5:
 

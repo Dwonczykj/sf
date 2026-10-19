@@ -6,8 +6,8 @@ description: Spawn an OpenAI Codex CLI agent (the `codex` binary, run headless v
 # codex-agent
 
 Runs `codex exec` headless with any instructions, plus an optional model and reasoning
-effort. Same shape as `cursor-agent` and `gemini-agent`, but backed by OpenAI's Codex
-CLI. Using this skill means the factory calls codex through its own CLI, so it does
+effort. Same shape as `cursor-agent` (and the `agy` call `review-seat` makes for Gemini), but
+backed by OpenAI's Codex CLI. Using this skill means the factory calls codex through its own CLI, so it does
 **not** depend on the `mcp__codex__codex` MCP server being registered.
 
 ## Requirements
@@ -83,7 +83,7 @@ Two implementation details that matter, both the reason a naive wrapper hangs fo
   gives it a closed fd, so it proceeds straight to the prompt.
 
 ## As a review mirror in the factory
-Same slot as `cursor-agent` / `gemini-agent` — an independent model's opinion on a diff,
+Same slot as `cursor-agent` and the Gemini seat — an independent model's opinion on a diff,
 run from a worktree. Codex already runs sandboxed read-only, so it needs less prompt
 armouring than the others, but keep the review discipline explicit:
 
@@ -96,7 +96,7 @@ findings and a VERDICT line." | node ${CLAUDE_PLUGIN_ROOT}/skills/codex-agent/sc
 ```
 
 This wrapper is stateless: each call is fresh, with no thread resume. On later loop
-rounds, re-run against the current diff — same as cursor-agent and gemini-agent already
+rounds, re-run against the current diff — same as cursor-agent and the Gemini seat already
 do.
 
 ## On failure

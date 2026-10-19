@@ -6,7 +6,7 @@ description: Spawn a Cursor CLI agent (the `agent` binary, Cursor's own multi-mo
 # cursor-agent
 
 Runs `agent --print` headless with any instructions plus an optional model. Same shape
-as `gemini-agent`, but backed by Cursor's CLI, which exposes many more model families
+as `codex-agent` (and the `agy` call `review-seat` makes for Gemini), but backed by Cursor's CLI, which exposes many more model families
 (GPT-5.x, Claude Opus/Sonnet 5, Gemini, Grok, Kimi, GLM) through one login.
 
 ## Requirements
@@ -38,8 +38,8 @@ Pass `--model <slug>` to the wrapper — that's the whole interface:
 echo "<instructions>" | node ${CLAUDE_PLUGIN_ROOT}/skills/cursor-agent/scripts/run-agent.mjs --model claude-opus-5-high
 ```
 
-There is **no separate `--effort` flag** on this CLI (gemini-agent's wrapper still
-accepts one for parity with agy, but cursor-agent has nothing to pass it to). Cursor
+There is **no separate `--effort` flag** on this CLI (`codex-agent` takes one, but
+cursor-agent has nothing to pass it to). Cursor
 bakes reasoning effort into the slug itself — pick the effort by picking the slug
 variant: `claude-opus-5-low` vs `claude-opus-5-high` vs `claude-opus-5-max` are three
 different slugs, not one slug plus a flag. Common suffixes across families: `-none`,
@@ -163,7 +163,7 @@ is 600s, enforced by Node's own `execFile` timeout (there's no `--print-timeout`
 equivalent on this CLI to double up with).
 
 ## As a review mirror in the factory
-Same slot as `gemini-agent` — an independent model's opinion on a diff, run from a
+Same slot as `codex-agent` and the Gemini seat — an independent model's opinion on a diff, run from a
 worktree:
 
 ```bash

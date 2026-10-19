@@ -36,6 +36,10 @@ repo's own `AGENTS.md` / `.claude/skills/backend-standards/SKILL.md`.
 - **Check:** diff every top-level key except `packages` in the four copies against the
   root file; any drift fails the check.
 
+## Impact data map
+
+Data map: `docs/impact-data-map.md`. Release tags: `main-*`.
+
 ## Blast risk
 
 High: the security-review globs from `apps/factory/brief.md` (keep the two in step), then collections, migrations, billing and usage attribution, and data deletion.

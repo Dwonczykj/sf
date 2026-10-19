@@ -6,7 +6,7 @@ Run Phase 3 (build through pre-PR RELEASE) as a deterministic Workflow instead o
 Preconditions (all human gates already passed in this interactive session):
 - `requirements.md` signed off and `split.md` approved (i.e. `sf:plan` done).
 - Slices in this run are INDEPENDENT (a single wave; disjoint files). Dependent slices go in a later wave after their dependency is pushed AND merged.
-- Each wave runs in its own fresh session: at the start of every slice after the first, hand the run to a new session via `fork-session`, per "One fresh session per slice" in the `start-feature` skill's Phase 3.
+- Each wave runs in its own fresh session: at the start of every slice after the first, hand the run to a new session via `sf:fork-session`, per "One fresh session per slice" in the `start-feature` skill's Phase 3.
 
 Models (per role): the script runs four roles on their own model — `build` (real work, default `claude-opus-5-5`), and the thin-driver roles `planReview` / `verify` and the `tests` agents (default `claude-sonnet-5-5`, since the drivers only parse vendor output). Resolve each role once: per-run flag → `~/.claude/sf-models.json` (set by `/sf:models`) → blanket `--model` → default. Per-run flags in $ARGUMENTS: `--plan-model`, `--build-model`, `--test-model`, `--verify-model`, and `--model` as the blanket for all four; strip every one out of $ARGUMENTS before slug inference below. Pass the resolved map as `models` in the Workflow args (omit any role you're leaving at default). `--model` alone still works as a blanket override.
 
