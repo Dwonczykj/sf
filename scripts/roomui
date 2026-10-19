@@ -2,7 +2,9 @@
 """Start, stop and watch the two local UIs behind sf:orchestrate: agent-team (Build Room) and Podium.
 
   roomui start    start whichever is down, plus the memory sampler; never restart one that is up
-  roomui stop     stop both servers and the sampler
+  roomui stop     stop both servers and the sampler, then offer to close each room (y/N, default no)
+  roomui rooms    list the rooms (runs) under the state dir, with open questions and last activity
+  roomui close <room>... [--force]   archive a room into <state dir>/.closed/<room>-<time>/
   roomui status   running or not, pid, RSS, CPU, uptime, URL, and the last 24 hours of samples
 
 Environment: ROOMUI_AGENT_TEAM_DIR (default ~/FyxerGh/agent-team), ROOMUI_PODIUM_DIR (default
@@ -13,7 +15,9 @@ sampler). Podium is stopped through `podiumctl stop`. Nothing here reads Podium'
 and podiumctl's own output is not printed on success, because its first start can show the token.
 """
 import argparse
+import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -220,7 +224,7 @@ def cmd_start():
     return 0
 
 
-def cmd_stop():
+def cmd_stop(ask=True):
     out = []
     pid = sampler_pid()
     out.append(stop_pid(pid, "sampler") if pid else "sampler: not running")
@@ -249,7 +253,116 @@ def cmd_stop():
         out.append(f"stopped podium (pid {pid})" if not code and find("podium")[0] == "down"
                    else podiumctl_failed("stop", code, text))
     print("\n".join(out))
+    offer_close(ask)
     return 0
+
+
+RECENT = 600  # a room with an event in the last 10 minutes is treated as live
+
+
+def room_names():
+    if not os.path.isdir(STATE):
+        return []
+    return sorted(
+        d for d in os.listdir(STATE)
+        if not d.startswith(".") and os.path.isdir(os.path.join(STATE, d))
+        and any(os.path.exists(os.path.join(STATE, d, f)) for f in ("tickets.json", "events.jsonl"))
+    )
+
+
+def room_summary(slug):
+    """What a person needs to decide whether to close a room: who runs it, its size, and whether it is live."""
+    d = os.path.join(STATE, slug)
+    try:
+        with open(os.path.join(d, "tickets.json"), encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        doc = {}
+    events = []
+    try:
+        with open(os.path.join(d, "events.jsonl"), encoding="utf-8") as f:
+            for line in f:
+                try:
+                    events.append(json.loads(line))
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    answered = {int(m.group(1)) for e in events if e.get("type") == "answer"
+                for m in [re.match(r"re (\d+):", str(e.get("note", "")))] if m}
+    open_q = sum(1 for e in events if e.get("type") == "question" and e.get("ask") and e.get("id") not in answered)
+    last = None
+    for e in events:
+        try:
+            t = datetime.strptime(e["ts"], TS).replace(tzinfo=timezone.utc)
+        except (KeyError, ValueError, TypeError):
+            continue
+        last = t if last is None or t > last else last
+    tickets = doc.get("tickets") if isinstance(doc.get("tickets"), list) else []
+    return {"slug": slug, "orchestrator": str(doc.get("orchestrator") or ""), "tickets": len(tickets),
+            "open": open_q, "last": last}
+
+
+def room_line(r, now):
+    bits = [f"{r['tickets']} tickets"]
+    if r["orchestrator"]:
+        bits.append(f"orchestrator {r['orchestrator']}")
+    bits.append(f"{r['open']} open question{'' if r['open'] == 1 else 's'}")
+    bits.append(f"last event {duration(int((now - r['last']).total_seconds()))} ago" if r["last"] else "no events")
+    return f"{r['slug']}  " + " · ".join(bits)
+
+
+def close_room(slug, force=False, now=None):
+    """Archive a room instead of deleting it. Returns (done, message)."""
+    now = now or datetime.now(timezone.utc)
+    if not slug or slug.startswith(".") or os.sep in slug or slug not in room_names():
+        return False, f"{slug}: no such room under {STATE}"
+    r = room_summary(slug)
+    live = r["last"] is not None and (now - r["last"]).total_seconds() < RECENT
+    if not force and (r["open"] or live):
+        why = " and ".join(x for x in (f"{r['open']} open question{'' if r['open'] == 1 else 's'}" if r["open"] else "",
+                                       "an event in the last 10 minutes" if live else "") if x)
+        return False, f"{slug}: not closed, it has {why}. Add --force to close it anyway."
+    root = os.path.join(STATE, ".closed")
+    os.makedirs(root, exist_ok=True)
+    dest = os.path.join(root, f"{slug}-{now.strftime('%Y%m%dT%H%M%SZ')}")
+    os.rename(os.path.join(STATE, slug), dest)
+    return True, f"closed {slug}: moved to {dest} (delete for good with: rm -r {dest})"
+
+
+def cmd_rooms():
+    names = room_names()
+    now = datetime.now(timezone.utc)
+    print("\n".join(room_line(room_summary(n), now) for n in names) if names else f"no rooms under {STATE}")
+    return 0
+
+
+def cmd_close(names, force):
+    if not names:
+        print("close needs a room name; `roomui rooms` lists them")
+        return 2
+    results = [close_room(n, force) for n in names]
+    print("\n".join(m for _, m in results))
+    return 0 if all(ok for ok, _ in results) else 1
+
+
+def offer_close(ask):
+    names = room_names()
+    if not names:
+        return
+    now = datetime.now(timezone.utc)
+    rooms = [room_summary(n) for n in names]
+    print("\nRooms:\n" + "\n".join("  " + room_line(r, now) for r in rooms))
+    if not (ask and sys.stdin.isatty()):
+        print("Close one with: roomui close <room> (add --force if it has open questions or recent events)")
+        return
+    for r in rooms:
+        try:
+            answer = input(f"Close room {r['slug']}? [y/N] ")
+        except EOFError:
+            return
+        if answer.strip().lower() in ("y", "yes"):
+            print(close_room(r["slug"], force=True)[1])
 
 
 def duration(secs):
@@ -316,5 +429,11 @@ def cmd_sampler():
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("action", choices=("start", "stop", "status", "sampler"), nargs="?", default="status")
-    sys.exit({"start": cmd_start, "stop": cmd_stop, "status": cmd_status, "sampler": cmd_sampler}[ap.parse_args().action]())
+    ap.add_argument("action", choices=("start", "stop", "status", "rooms", "close", "sampler"), nargs="?", default="status")
+    ap.add_argument("names", nargs="*", help="rooms to close")
+    ap.add_argument("--force", action="store_true", help="close a room even with open questions or recent events")
+    ap.add_argument("--no-ask", action="store_true", help="stop without offering to close rooms")
+    a = ap.parse_args()
+    run = {"start": cmd_start, "stop": lambda: cmd_stop(not a.no_ask), "status": cmd_status, "rooms": cmd_rooms,
+           "close": lambda: cmd_close(a.names, a.force), "sampler": cmd_sampler}
+    sys.exit(run[a.action]())
