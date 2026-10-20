@@ -114,7 +114,7 @@ gh stack link --base staging <bottom-pr> <middle-pr> <top-pr>   # PR numbers, bo
 
 This sets each child's base to its parent's branch and auto-retargets on merge, so you never hand-maintain `--base` re-targets. Independent leaves that sit directly on `staging` don't need linking.
 
-Linear sub-issue under the parent PRD via the `notion-/linear-create-context-pod-issue` style skill or the Linear MCP `save_issue` tool with `parentId: <parent-issue>`.
+Linear sub-issue under the parent PRD via the Linear MCP `save_issue` tool with `parentId: <parent-issue>`.
 
 Backfill the Linear URL into the PR body with `gh pr edit <num> --body ...` once the issue ID is known.
 

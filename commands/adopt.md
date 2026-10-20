@@ -19,7 +19,7 @@ Feature: $ARGUMENTS if given, else infer from this session's context.
 
 5. **Hand to the pipeline.** Continue the `start-feature` pipeline (see its skill) from that first unmet gate:
    - At Phase 1, do **not** re-grill from zero. Grill only to close the gaps in the seeded `requirements.md`, then get explicit sign-off — the seeded contract is a starting draft, the sign-off gate is still hard.
-   - Phase 2 split, optional Phase 2.5 spec, then Phase 3 build+verify per slice, through `create-pr`, exactly as `start-feature` defines. Honour every human gate; update `progress.md` at each.
+   - Phase 2 split, optional Phase 2.5 spec, then Phase 3 build+verify per slice, through `create-pr`, exactly as `start-feature` defines, each slice after the first in a fresh session forked via `sf:fork-session`. Honour every human gate; update `progress.md` at each.
 
 The point is to not throw away scoping the session already did, while keeping every start-feature gate intact. If nothing in the session is actually scoped yet, say so and suggest `sf:start-feature` instead.
 

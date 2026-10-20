@@ -1,6 +1,6 @@
 ---
 name: create-pr
-description: Create a pull request with the correct base branch and assignment based on the repository (Fyxer-AI/web-app → staging, Fyxer-AI/eval → main, else → staging). Assigns to Dwonczykj. For web-app, asks about the deploy-preview label. Use when the user asks to create a PR, open a pull request, or push a branch for review.
+description: Create a pull request with the correct base branch and assignment based on the repository (Fyxer-AI/web-app → staging, Fyxer-AI/eval → main, else → staging). Assigns to the configured PR assignee (default: you). For web-app, asks about the deploy-preview label. Use when the user asks to create a PR, open a pull request, or push a branch for review.
 user_invocable: true
 ---
 
@@ -21,11 +21,21 @@ git log --oneline -10
 
 ## Phase 2: Determine base branch and settings
 
-| Repo | Base branch | Assign |
-|------|-------------|--------|
-| `Fyxer-AI/web-app` | `staging` | `Dwonczykj` |
-| `Fyxer-AI/eval` | `main` | `Dwonczykj` |
-| anything else | `staging` | `Dwonczykj` |
+| Repo | Base branch |
+|------|-------------|
+| `Fyxer-AI/web-app` | `staging` |
+| `Fyxer-AI/eval` | `main` |
+| anything else | `staging` |
+
+The assignee is not hardcoded. Resolve it into `$ASSIGNEE` once, before Phase 6: the plugin's `prAssignee` setting, or yourself when it is blank.
+
+```bash
+# ${user_config.prAssignee} is substituted by Claude Code from the plugin's install-time config.
+# Blank (default) or an unconfigured install falls back to the authenticated gh user.
+ASSIGNEE='${user_config.prAssignee}'
+case "$ASSIGNEE" in ''|*user_config.prAssignee*) ASSIGNEE='@me' ;; esac
+echo "assignee: $ASSIGNEE"
+```
 
 ## Phase 2b: deploy-preview label (web-app only)
 
@@ -48,18 +58,29 @@ If there are no commits ahead of the base branch, stop and tell the user there i
 
 If there are uncommitted changes, warn the user and ask if they want to commit them first before continuing.
 
-## Phase 4: Link to a Linear issue (Context Pod)
+## Phase 4: Link to a Linear issue
 
-1. Invoke `/linear-list-my-context-pod-issues` to fetch open issues assigned to the user in Context Pod Q2 2026. Show the list inline.
+The Linear tool names carry a connector prefix that differs per install, so find them with `ToolSearch` (`get_issue`, `list_issues`, `save_issue`). If no Linear connector is available, skip this phase.
+
+Resolve the optional project filter into `$LINEAR_PROJECT`: the plugin's `linearProject` setting, treated as unset when blank.
+
+```bash
+# ${user_config.linearProject} is substituted by Claude Code from the plugin's install-time config.
+LINEAR_PROJECT='${user_config.linearProject}'
+case "$LINEAR_PROJECT" in *user_config.linearProject*) LINEAR_PROJECT='' ;; esac
+echo "linear project: ${LINEAR_PROJECT:-<none>}"
+```
+
+1. Fetch the user's open issues (assignee `me`, state not completed or canceled), limited to `$LINEAR_PROJECT` when it is set. Show the list inline.
 2. Use `AskUserQuestion` to ask:
 
-   > "Is this PR linked to an existing Context Pod Linear issue, or should I create a new one?"
+   > "Is this PR linked to an existing Linear issue, or should I create a new one?"
 
    Options: **Pick existing** / **Create new** / **Skip — no Linear issue**
 
-3. If **Pick existing**: ask the user to provide the issue identifier (e.g. `PRE-123`). Call `mcp__ac8e4a0b-1ec5-4ab5-8b10-e46579796632__get_issue` with that identifier to resolve the URL. Store the identifier + URL for use in the PR body.
+3. If **Pick existing**: ask the user to provide the issue identifier (e.g. `PRE-123`). Call `get_issue` with that identifier to resolve the URL. Store the identifier + URL for use in the PR body.
 
-4. If **Create new**: invoke `/linear-create-context-pod-issue`. The title/description should be derived from the commits and diff already gathered. Use the returned identifier + URL in the PR body.
+4. If **Create new**: call `save_issue` in team Product Engineering (`PRE`), in `$LINEAR_PROJECT` when it is set, assigned to the user. Derive the title from the commits and diff already gathered. Keep the description to the raw requirement: the outcome that must be true and why it matters, plus at most a one-line "done when". Leave out implementation detail (file paths, code, metrics, proposed approach); that lives in the PR. Don't set a status or labels, so Linear applies the team default. Use the returned identifier + URL in the PR body.
 
 5. If **Skip**: continue without a Linear reference.
 
@@ -110,6 +131,12 @@ Read the commits and diff to write:
   1. <task 1, one sentence>
   2. <task 2, one sentence>
 
+  ## Supporting evidence & Impact   ← only when an impact report exists (see below)
+
+  <from <state dir>/impact.md: the gap / baseline table, the per-day table if any,
+  the downstream effect, edge-case sizes, what it does not show, and the measurement plan
+  with the primary query in a <details> block. Copy the numbers, never re-derive them>
+
   ## Risks
 
   <from the Phase 4b subagent verdict: blast radius, rollback plan, latent paths (e.g.
@@ -141,6 +168,8 @@ Read the commits and diff to write:
 
 Keep each section factual and specific — "None" is a real, valid answer for Testing/Risks on a trivial change, not something to pad out.
 
+**Supporting evidence & Impact (web-app).** Look for `<state dir>/impact.md`, written by the `sf:size-change-impact` skill: the state dir is the folder of the run's `progress.md`, `~/FyxerGh/build-room/<slug>/` after an orchestrate adopt, else `.scratch/<slug>/` in the worktree (slug from the factory run, the Linear code, or the branch). If it exists, add the section between Testing and Risks, built from that report only. If it does not exist and the change is a `feat:` or `fix:` that touches something a metric, cost model or funnel reads, say so in the Phase 8 report and offer `sf:size-change-impact`; do not invent numbers. Skip the section for `chore:` and for reports whose tier is "None". The section is not a required template heading, so its absence never fails CI.
+
 ## Phase 6: Push and create the PR
 
 First push the branch if it isn't already on the remote:
@@ -149,12 +178,14 @@ First push the branch if it isn't already on the remote:
 git push -u origin <current-branch>   # only if not already pushed
 ```
 
-Then create the PR:
+Then create the PR. Shell variables do not persist between Bash calls, so repeat the Phase 2 assignee resolution in the same command:
 
 ```bash
+ASSIGNEE='${user_config.prAssignee}'
+case "$ASSIGNEE" in ''|*user_config.prAssignee*) ASSIGNEE='@me' ;; esac
 gh pr create \
   --base <base-branch> \
-  --assignee Dwonczykj \
+  --assignee "$ASSIGNEE" \
   --title "<title>" \
   --body "$(cat <<'EOF'
 <body>

@@ -19,12 +19,12 @@ Create a branch named:
 - **`LINEAR-CODE`** — the Linear identifier, uppercase, e.g. `PRE-2884`. Omit this segment entirely (no double dash) if there is no issue.
 - **`kebab-title`** — lowercase kebab-case, 3–6 words, describing the change not the trigger. Strip the Linear code if it appears in the issue title.
 
-Examples (with `<prefix>` resolved to `joeydwonczyk`):
+Examples:
 
 ```
-joeydwonczyk/fix-PRE-2884-outlook-source-weblink
-joeydwonczyk/feat-PRE-3086-person-relationship-subcollection
-joeydwonczyk/chore-drop-dead-ml-fields
+<prefix>/fix-PRE-2884-outlook-source-weblink
+<prefix>/feat-PRE-3086-person-relationship-subcollection
+<prefix>/chore-drop-dead-ml-fields
 ```
 
 ## Steps
@@ -40,7 +40,7 @@ case "$PREFIX" in ''|*user_config.branchPrefix*) PREFIX="$(whoami)" ;; esac
 
 The `*user_config.branchPrefix*` arm catches an install that never persisted the option (the token is left verbatim); the empty arm catches the blank default. A configured value passes straight through.
 
-1. **Work out the parts.** If the user gave a bare `PRE-1234`, fetch the issue title with the Linear MCP (`mcp__ac8e4a0b-1ec5-4ab5-8b10-e46579796632__get_issue`) rather than guessing. If they gave a description and no issue, skip the code segment. Ask only if the type is genuinely ambiguous — otherwise pick and say what you picked.
+1. **Work out the parts.** If the user gave a bare `PRE-1234`, fetch the issue title with the Linear MCP (`get_issue`, found with `ToolSearch`; the connector prefix differs per install) rather than guessing. If they gave a description and no issue, skip the code segment. Ask only if the type is genuinely ambiguous — otherwise pick and say what you picked.
 
 2. **Pick the base branch** by repo:
    - `Fyxer-AI/web-app` → `staging`

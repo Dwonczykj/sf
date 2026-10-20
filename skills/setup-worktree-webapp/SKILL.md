@@ -8,7 +8,7 @@ description: Set up a dedicated git worktree of the Fyxer web-app so a branch ca
 Creates a **dedicated sibling worktree** of the Fyxer web-app so a branch can run locally without touching the shared main tree at `fyxer-web-app/` (concurrent agents branch-switch it out from under you). Perform steps 1–6, then hand the user the two server commands in step 7 (they run the long-lived servers themselves, or run them with `run_in_background`).
 
 ## Inputs
-- **branch** (required) — from `$ARGUMENTS`, e.g. `joeydwonczyk/streaming-vis-chat`.
+- **branch** (required) — from `$ARGUMENTS`, e.g. `<prefix>/streaming-vis-chat`.
 - **worktree name** (optional) — short dir name; default to a slug of the branch.
 
 ## Paths
