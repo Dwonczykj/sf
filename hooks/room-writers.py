@@ -4,6 +4,7 @@
 A room dir is a dir holding events.jsonl. In one:
 - ledger.md and tickets.json: only a session marked `sf-orchestrator: ` (a reply that starts with it).
 - events.jsonl and signoffs.jsonl: nobody edits them; `room log` and `room signoff` append.
+- prs.json: nobody edits it; `room prs` (open to every session) writes it from GitHub.
 - requirements.md, once Joey has signed off the requirements gate: only while a `--change requirements.md`
   sign-off is newer than SF_SIGNOFF_EDIT_MINUTES (default 60). In a topic room the same holds for each
   feature's features/<slug>/requirements.md (signed for that feature) and each light build's light/<ticket>.md
@@ -124,6 +125,8 @@ def check(path, orchestrator, transcript):
     room = os.path.isfile(os.path.join(d, "events.jsonl"))
     if room and name in ("events.jsonl", "signoffs.jsonl"):
         return f"{name} is append-only through the `room` CLI (room log / room signoff); never edit it."
+    if room and name == "prs.json":
+        return "prs.json is written by `room prs` alone, from GitHub; run that instead of editing it."
     if room and name in ("ledger.md", "tickets.json") and not orchestrator(transcript):
         return f"only the sf:orchestrate session writes {name}. Log what you need with `room log`."
     if name == "requirements.md" and os.path.isfile(os.path.join(d, "signoffs.jsonl")):

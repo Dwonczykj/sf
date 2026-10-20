@@ -35,6 +35,7 @@ Each room lives in `~/FyxerGh/build-room/<slug>/`. Each file has one writer, enf
 | `ledger.md` | the orchestrator only, rewritten whole on every wake | the event cursor, decisions and open asks the board doesn't show |
 | `progress.md` | `room render` only | the board for people to read |
 | `signoffs.jsonl` | `room signoff` only | the human's answers, gate sign-offs and free messages |
+| `prs.json` | `room prs` only | every PR the room's tickets name, read from GitHub: CI, human reviews, unresolved bot and human threads, mergeable, how far behind, merge times, and the merge order of the unmerged ones |
 | `podium-seen.json` | `room podium` only | what Podium last showed for each worker, so a wake logs only what is new |
 | `requirements.md`, `split.md`, `briefs/` | the contract, signed off before any build starts | |
 | `features/<slug>/` | a topic room's feature: its contract, or an adopted run's `source.md` and `summary.md` | one feature each |
@@ -50,11 +51,23 @@ Each room lives in `~/FyxerGh/build-room/<slug>/`. Each file has one writer, enf
 
 ## What the human sees
 
-- **The Room UI** (agent-team, `http://127.0.0.1:7777/room`) shows the inbox and the board, and is where answers are sent from.
-- **The build-room-view mod** shows a read-only Inbox and Board pane inside the orchestrator's session.
+- **The Room UI** (agent-team, `http://127.0.0.1:7777/room`) shows the inbox, the board and the room's PRs, and is where answers are sent from.
+- **The build-room-view mod** shows a read-only Inbox, Board and merge-train pane inside the orchestrator's session.
 - **Podium** (`http://127.0.0.1:4317`) shows every session's live state. The orchestrator reads it with `room podium` to spot stuck workers.
 
 `/sf:room start`, `stop`, `status`, `rooms`, `new`, `close` and `join` manage these (`commands/room.md`).
+
+## Pull requests
+
+`room prs --dir <state dir>` reads each PR a ticket names (`pr`, `prUrl`, or a `branch` with an open PR) from GitHub with `gh`, one PR at a time and read-only, and writes `prs.json`. It orders the unmerged PRs by the tickets' `stacksOn` and `after` and by GitHub's base branches, marks the first with nothing blocking it as `next`, and includes adopted tickets' PRs flagged `readOnly`. It logs a `ci` event only when a PR's state, CI, review or mergeable state changes. When `gh` is missing, logged out or rate limited, it keeps the last good data and writes the reason to `error`. The repo comes from the ticket's PR URL or its worktree's git remote.
+
+Nothing polls GitHub. Three things run it:
+
+- **The orchestrator**, on every wake, before it renders the board.
+- **The build-room-view mod**, on Claude events in a session that belongs to a room, at most once a minute and never two at once.
+- **The Room UI's Refresh button**, for when the mod can't reach `gh`. The agent-team server runs `room prs` for that room with a fixed argv and the page picks up the new `prs.json` by its file watch.
+
+The Room UI shows the unmerged PRs as a merge train, with merged ones behind a "Merged" history; the mod's pane shows a compact text version.
 
 ## Topic rooms
 

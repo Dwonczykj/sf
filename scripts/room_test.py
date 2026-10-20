@@ -554,6 +554,162 @@ with tempfile.TemporaryDirectory() as root:
     assert tree_hash(src) == before, "refresh wrote to the adopted run"
 
 
+GH_STUB = f"""#!{sys.executable}
+import json, os, sys
+fx = json.load(open(os.environ["GH_FIXTURE"]))
+a = sys.argv[1:]
+open(os.environ["GH_FIXTURE"] + ".calls", "a").write(" ".join(a) + "\\n")
+if fx.get("fail"):
+    sys.exit(sys.stderr.write(fx["fail"] + "\\n") and 1)
+arg = lambda flag: a[a.index(flag) + 1]
+if a[:2] == ["pr", "view"]:
+    key = arg("--repo") + "#" + a[2]
+    if key not in fx["view"]:
+        sys.exit(sys.stderr.write("GraphQL: Could not resolve to a PullRequest\\n") and 1)
+    print(json.dumps(fx["view"][key]))
+elif a[:2] == ["pr", "list"]:
+    print(json.dumps(fx["branches"].get(arg("--repo") + ":" + arg("--head"), [])))
+elif a[:2] == ["api", "graphql"]:
+    kv = dict(x.split("=", 1) for x in a if "=" in x and not x.startswith("query="))
+    nodes = fx["threads"].get(kv["o"] + "/" + kv["r"] + "#" + kv["n"], [])
+    print(json.dumps({{"data": {{"repository": {{"pullRequest": {{"reviewThreads": {{"nodes": nodes}}}}}}}}}}))
+elif a[0] == "api":
+    print(fx["behind"].get(a[1], 0))
+else:
+    sys.exit(sys.stderr.write("unexpected gh call\\n") and 1)
+"""
+
+
+def gh_pr(n, state="OPEN", base="staging", head=None, checks=(), reviews=(), **extra):
+    return {"number": n, "url": f"https://github.com/acme/app/pull/{n}", "title": f"PR {n}", "state": state,
+            "isDraft": False, "baseRefName": base, "headRefName": head or f"j/{n}", "statusCheckRollup": list(checks),
+            "latestReviews": [{"author": {"login": l}, "state": s} for l, s in reviews], "mergeable": "MERGEABLE",
+            "createdAt": "2026-10-01T09:00:00Z", "updatedAt": "2026-10-02T09:00:00Z", "mergedAt": None,
+            "mergedBy": None, "body": "", **extra}
+
+
+def thread(login, resolved=False):
+    return {"isResolved": resolved, "comments": {"nodes": [{"author": {"login": login}}]}}
+
+
+with tempfile.TemporaryDirectory() as root:
+    # room prs: each ticket's PR from GitHub (gh stubbed), the merge order, and a ci event only on a change.
+    d, stub, wt = os.path.join(root, "room"), os.path.join(root, "bin"), os.path.join(root, "wt-s2")
+    for p in (d, stub, wt):
+        os.makedirs(p)
+    write(os.path.join(stub, "gh"), GH_STUB)
+    os.chmod(os.path.join(stub, "gh"), 0o755)
+    subprocess.run(["git", "init", "-q", wt], check=True)
+    subprocess.run(["git", "-C", wt, "remote", "add", "origin", "git@github.com:acme/app.git"], check=True)
+    url = lambda n: f"https://github.com/acme/app/pull/{n}"
+    put_tickets(d, {"slug": "room", "tickets": [
+        {"id": "s1", "title": "schema", "state": "PR", "pr": 101, "prUrl": url(101), "branch": "j/s1", "feature": "f1",
+         "session": "room-s1", "sessionId": "local_0a1b2c3d-0a1b-0a1b-0a1b-0a1b2c3d4e5f"},
+        {"id": "s2", "title": "write path", "state": "PR", "branch": "j/s2", "stacksOn": "s1", "worktree": wt},
+        {"id": "s3", "title": "factory one", "state": "FACTORY", "prUrl": url(103), "after": ["s1"], "linear": "FAC-1"},
+        {"id": "s4", "title": "waits on t9", "state": "PR", "pr": 104, "prUrl": url(104), "after": ["t9"]},
+        {"id": "old", "title": "merged one", "state": "MERGED", "pr": 99, "prUrl": url(99)},
+        {"id": "x.s1", "title": "adopted", "state": "PR", "pr": 105, "prUrl": url(105), "source": "/elsewhere"},
+        {"id": "t9", "title": "not built", "state": "NOT STARTED"},
+        {"id": "e1", "title": "explore", "kind": "explore", "state": "BUILDING"},
+    ]})
+    write(os.path.join(d, "events.jsonl"), "")
+    green = [{"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}, {"context": "lint", "state": "SUCCESS"}]
+    fx = {"view": {
+        "acme/app#101": gh_pr(101, head="j/s1", checks=green, reviews=[("alice", "APPROVED"), ("cursor[bot]", "COMMENTED")],
+                              body="Fixes https://linear.app/team/issue/ABC-12/schema"),
+        "acme/app#102": gh_pr(102, base="j/s1", head="j/s2", mergeable="CONFLICTING", checks=[
+            {"name": "unit", "status": "COMPLETED", "conclusion": "FAILURE"}, {"name": "e2e", "status": "IN_PROGRESS",
+                                                                              "conclusion": ""}]),
+        "acme/app#103": gh_pr(103, head="j/s3", isDraft=True),
+        "acme/app#104": gh_pr(104, checks=green),
+        "acme/app#99": gh_pr(99, state="MERGED", mergedAt="2026-10-03T10:00:00Z", mergedBy={"login": "alice"}),
+        "acme/app#105": gh_pr(105),
+    }, "branches": {"acme/app:j/s2": [{"number": 102}]},
+        "threads": {"acme/app#102": [thread("cursor[bot]"), thread("coderabbitai"), thread("bob"), thread("cursor", True)],
+                    "acme/app#101": [thread("bob", True)]},
+        "behind": {"repos/acme/app/compare/j/s1...j/s2": 12}}
+    fixture = os.path.join(root, "gh.json")
+    env = {**os.environ, "PATH": stub + os.pathsep + os.environ["PATH"], "GH_FIXTURE": fixture}
+    prs_run = lambda e=env: subprocess.run([sys.executable, ROOM, "prs", "--dir", d], capture_output=True, text=True, env=e)
+    prs_doc = lambda: json.load(open(os.path.join(d, "prs.json")))
+    write(fixture, json.dumps(fx))
+    r = prs_run()
+    assert r.returncode == 0 and "6 PRs, 5 unmerged, 0 changes logged" in r.stdout, r.stdout + r.stderr
+    doc = prs_doc()
+    assert doc["error"] is None and doc["checkedAt"], doc
+    by = {e["number"]: e for e in doc["prs"]}
+    assert [e["number"] for e in doc["prs"]] == [101, 102, 103, 104, 105, 99], [e["number"] for e in doc["prs"]]
+    assert [e["order"] for e in doc["prs"]] == [1, 2, 3, 4, 5, None]
+    assert by[101]["next"] and not any(by[n]["next"] for n in (102, 103, 104, 105))
+    assert by[101]["ready"] and not by[102]["ready"] and not by[104]["ready"]  # 104 has no approval
+    assert by[101]["reviews"] == [{"login": "alice", "state": "APPROVED"}]  # the bot's review is left out
+    assert by[101]["linearUrl"] == "https://linear.app/team/issue/ABC-12" and by[101]["feature"] == "f1"
+    assert by[101]["sessionId"].startswith("local_") and by[101]["builtBy"] == "session"
+    assert by[102]["ci"] == {"passed": 0, "failed": 1, "running": 1, "failing": ["unit"]}
+    assert by[102]["threads"] == {"bots": 2, "humans": 1, "botNames": ["coderabbitai", "cursor"]}
+    assert by[102]["mergeable"] == "CONFLICTING" and by[102]["behind"] == 12 and by[101]["behind"] == 0
+    assert by[102]["stacksOn"] == "acme/app#101" and by[102]["depth"] == 1 and by[102]["mergesAfter"] == ["acme/app#101"]
+    assert by[103]["builtBy"] == "factory" and by[103]["draft"] and by[103]["mergesAfter"] == ["acme/app#101"]
+    assert by[103]["depth"] == 0 and by[104]["waitsOn"] == ["t9"] and by[105]["readOnly"]
+    fx["view"]["acme/app#104"]["latestReviews"] = [{"author": {"login": "alice"}, "state": "APPROVED"}]
+    write(fixture, json.dumps(fx))
+    prs_run()
+    assert not {e["number"]: e for e in prs_doc()["prs"]}[104]["ready"]  # approved and green, but t9 is not built
+    fx["view"]["acme/app#104"]["latestReviews"] = []
+    write(fixture, json.dumps(fx))
+    prs_run()
+    assert by[99]["mergedBy"] == "alice" and by[99]["behind"] is None
+    calls = open(fixture + ".calls").read().splitlines()
+    assert all(c.split()[0] in ("pr", "api") and c.split()[1] in ("view", "list", "graphql") or c.startswith("api repos/")
+               for c in calls), calls  # read-only: views, lists and api reads, nothing that writes
+    assert not any(" -X " in c or "--method" in c for c in calls)
+
+    # a change in CI is logged once, as a ci event from github; an unchanged PR and an adopted one log nothing
+    seen = len(evs(d))
+    fx["view"]["acme/app#102"]["statusCheckRollup"] = green
+    fx["view"]["acme/app#105"]["mergeable"] = "CONFLICTING"
+    write(fixture, json.dumps(fx))
+    assert "1 changes logged" in prs_run().stdout
+    ci = [e for e in evs(d)[seen:] if e["type"] == "ci"]
+    assert len(ci) == 1 and ci[0]["ticket"] == "s2" and ci[0]["role"] == "github", ci
+    assert ci[0]["note"] == "#102 open; CI passed; review no review; conflicting", ci[0]["note"]
+    assert "0 changes logged" in prs_run().stdout
+
+    # 101 merges: the next one up is 102 and 103, and 102 is no longer indented
+    fx["view"]["acme/app#101"].update(state="MERGED", mergedAt="2026-10-04T10:00:00Z", mergedBy={"login": "bob"})
+    write(fixture, json.dumps(fx))
+    prs_run()
+    by = {e["number"]: e for e in prs_doc()["prs"]}
+    assert by[102]["next"] and by[102]["order"] == 1 and by[102]["depth"] == 0 and by[101]["order"] is None
+    assert [e["number"] for e in prs_doc()["prs"]][-2:] == [101, 99]  # merged, newest first
+
+    # gh failing (logged out, rate limited) or missing keeps the last good data and says why in one line
+    good = prs_doc()
+    fx["fail"] = "HTTP 403: API rate limit exceeded for user"
+    write(fixture, json.dumps(fx))
+    prs_run()
+    bad = prs_doc()
+    assert bad["prs"] == good["prs"] and bad["checkedAt"] == good["checkedAt"], "lost the last good data"
+    assert "rate limit exceeded" in bad["error"] and "\n" not in bad["error"], bad["error"]
+    prs_run({**env, "PATH": os.path.join(root, "empty")})
+    assert prs_doc()["error"].startswith("gh is not installed") and prs_doc()["prs"] == good["prs"]
+
+    # one run at a time per room: a second one leaves the first to finish
+    import fcntl
+    held = os.open(d, os.O_RDONLY)
+    fcntl.flock(held, fcntl.LOCK_EX)
+    assert "another room prs" in prs_run().stdout
+    os.close(held)
+
+    # prs.json has one writer: room prs
+    orch = os.path.join(root, "orch.jsonl")
+    write(orch, '{"text":"sf-orchestrator: room"}\n')
+    assert hook("Write", {"file_path": os.path.join(d, "prs.json")}, orch)
+    assert hook("Bash", {"command": f"echo {{}} > {d}/prs.json"}, orch)
+    assert not hook("Bash", {"command": f"python3 {d}/room prs --dir {d}"}, os.path.join(root, "worker.jsonl"))
+
+
 # orchestrate.md's task table and the CLI's TASKS name the same kinds and start tiers.
 import importlib.machinery
 import importlib.util

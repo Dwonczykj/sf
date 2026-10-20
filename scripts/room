@@ -15,6 +15,8 @@
   new      make a topic room: no contract, this session as orchestrator, Joey's Linear mirror answer
   adopt    add another run as a feature by reference: features/<slug>/source.md, then refresh (orchestrator)
   refresh  copy each adopted run's tickets onto this room's board, reading that run and never writing to it
+  prs      read each ticket's PR from GitHub with `gh` (read-only) into prs.json, its only writer, with the merge
+           order of the unmerged ones; log a `ci` event when a PR's state, CI, review or mergeable state changes
 
 Every session writes events through this, never with an editor or a shell redirect, so each line
 parses and carries a sequence id the orchestrator's ledger uses as its cursor. Only signoffs.jsonl
@@ -26,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -740,6 +743,250 @@ def adopt(a):
     return 0
 
 
+# room prs: every PR the room's tickets name, read from GitHub with gh. Read-only on GitHub: view, list, api reads.
+BOTS = {"cursor", "chatgpt-codex-connector", "qodo-code-review", "coderabbitai", "copilot", "github-actions"}
+PR_URL = re.compile(r"^https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
+REMOTE = re.compile(r"github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?/?$")
+LINEAR_URL = re.compile(r"https://linear\.app/[\w.-]+/issue/[\w-]+")
+PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+FAILED = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+PR_JSON = ("number,url,title,state,isDraft,baseRefName,headRefName,statusCheckRollup,latestReviews,mergeable,"
+           "createdAt,updatedAt,mergedAt,mergedBy,body")
+THREADS = ("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){"
+           "reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login}}}}}}}}")
+
+
+class GhError(Exception):
+    pass
+
+
+def gh(*args):
+    """stdout of one gh call, or GhError with a one-line reason (missing, logged out, rate limited...)."""
+    try:
+        r = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
+    except FileNotFoundError:
+        raise GhError("gh is not installed") from None
+    except subprocess.TimeoutExpired:
+        raise GhError(f"gh {args[0]} timed out") from None
+    if r.returncode:
+        line = next((l.strip() for l in r.stderr.splitlines() if l.strip()), f"exit {r.returncode}")
+        raise GhError(f"gh {args[0]} {args[1]}: {line}"[:200])
+    return r.stdout
+
+
+def is_bot(login):
+    login = (login or "").lower()  # the bot list check-open-prs uses, plus any app account
+    return login.endswith("[bot]") or login in BOTS
+
+
+def ci_summary(rollup):
+    out = {"passed": 0, "failed": 0, "running": 0, "failing": []}
+    for c in rollup or []:
+        result = c.get("conclusion") or c.get("state") or ""  # a check run's conclusion, a status's state
+        if result in PASSED:
+            out["passed"] += 1
+        elif result in FAILED:
+            out["failed"] += 1
+            out["failing"].append(c.get("name") or c.get("context") or "?")
+        else:
+            out["running"] += 1
+    return out
+
+
+def repo_of(t, before):
+    """owner/name from the ticket's PR url, the last check, or its worktree's origin remote. Never hard-coded."""
+    m = PR_URL.match(t.get("prUrl") or "")
+    if m:
+        return m[1]
+    if before.get("repo"):
+        return before["repo"]
+    wt = t.get("worktree") and os.path.expanduser(t["worktree"])
+    if wt and os.path.isdir(wt):
+        try:
+            url = subprocess.run(["git", "-C", wt, "remote", "get-url", "origin"], capture_output=True, text=True,
+                                 timeout=5).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            url = ""
+        m = REMOTE.search(url)
+        if m:
+            return m[1]
+    return None
+
+
+def pr_number(t, before):
+    m = PR_URL.match(t.get("prUrl") or "")
+    if m:
+        return int(m[2])
+    try:
+        return int(str(t.get("pr") or "").lstrip("#")) if t.get("pr") else before.get("number")
+    except ValueError:
+        return before.get("number")
+
+
+def fetch_pr(repo, number):
+    """One PR, one gh call after another: check-open-prs found batched GraphQL fails."""
+    p = json.loads(gh("pr", "view", str(number), "--repo", repo, "--json", PR_JSON))
+    owner, name = repo.split("/")
+    data = json.loads(gh("api", "graphql", "-f", f"query={THREADS}", "-f", f"o={owner}", "-f", f"r={name}",
+                         "-F", f"n={number}"))
+    nodes = (((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {}).get("reviewThreads") or {}
+    threads = {"bots": 0, "humans": 0, "botNames": []}
+    for n in nodes.get("nodes") or []:
+        if n.get("isResolved"):
+            continue
+        first = ((n.get("comments") or {}).get("nodes") or [{}])[0] or {}
+        login = (first.get("author") or {}).get("login") or "ghost"
+        if is_bot(login):
+            threads["bots"] += 1
+            threads["botNames"] = sorted(set(threads["botNames"]) | {login.removesuffix("[bot]")})
+        else:
+            threads["humans"] += 1
+    behind = None
+    if p.get("state") == "OPEN":
+        try:
+            ref = lambda x: urllib.parse.quote(x, safe="/")
+            behind = int(gh("api", f"repos/{repo}/compare/{ref(p['baseRefName'])}...{ref(p['headRefName'])}",
+                            "--jq", ".behind_by").strip())
+        except (GhError, ValueError):
+            behind = None  # a deleted head or a fork: the rest of the PR still counts
+    linear = LINEAR_URL.search(p.get("body") or "")
+    return {
+        "key": f"{repo}#{p['number']}", "number": p["number"], "url": p.get("url"), "repo": repo,
+        "title": p.get("title"), "state": p.get("state"), "draft": bool(p.get("isDraft")),
+        "base": p.get("baseRefName"), "head": p.get("headRefName"), "ci": ci_summary(p.get("statusCheckRollup")),
+        "reviews": [{"login": r["author"]["login"], "state": r.get("state")} for r in p.get("latestReviews") or []
+                    if (r.get("author") or {}).get("login") and not is_bot(r["author"]["login"])],
+        "threads": threads, "mergeable": p.get("mergeable") or "UNKNOWN", "behind": behind,
+        "createdAt": p.get("createdAt"), "updatedAt": p.get("updatedAt"), "mergedAt": p.get("mergedAt"),
+        "mergedBy": (p.get("mergedBy") or {}).get("login"), "linearUrl": linear[0] if linear else None,
+    }
+
+
+def is_ready(e):
+    c, states = e["ci"], [r["state"] for r in e["reviews"]]
+    return (e["state"] == "OPEN" and not e["draft"] and not c["failed"] and not c["running"]
+            and e["mergeable"] == "MERGEABLE" and not e["threads"]["bots"] + e["threads"]["humans"]
+            and "APPROVED" in states and "CHANGES_REQUESTED" not in states)
+
+
+def merge_order(entries, tickets):
+    """Order the unmerged PRs: an edge for each stacksOn and after between tickets, and for each PR based on another's
+    head. Ties keep tickets.json's order. Sets order, depth (stack indent), stacksOn, mergesAfter, waitsOn, next, and
+    clears ready on a PR something still blocks."""
+    by_ticket, idx = {t.get("id"): t for t in tickets}, {t.get("id"): i for i, t in enumerate(tickets)}
+    open_ = [e for e in entries if e["state"] == "OPEN"]
+    by_tid = {e["ticket"]: e for e in open_}
+    by_head = {(e["repo"], e["head"]): e for e in open_}
+    merged = {e["ticket"] for e in entries if e["state"] == "MERGED"}
+    for e in entries:
+        e.update(order=None, depth=0, stacksOn=None, mergesAfter=[], waitsOn=[], next=False)
+    for e in open_:
+        t = by_ticket.get(e["ticket"], {})
+        parent = by_head.get((e["repo"], e["base"])) or by_tid.get(t.get("stacksOn"))
+        e["stacksOn"] = parent["key"] if parent and parent is not e else None
+        after = [e["stacksOn"]] if e["stacksOn"] else []
+        for ref in dict.fromkeys(([t["stacksOn"]] if t.get("stacksOn") else []) + (t.get("after") or [])):
+            if ref in by_tid:
+                after.append(by_tid[ref]["key"])
+            elif ref not in merged and by_ticket.get(ref, {}).get("state") not in FINISHED:
+                e["waitsOn"].append(ref)  # a ticket with no open PR yet, still unfinished
+        e["mergesAfter"] = [k for k in dict.fromkeys(after) if k != e["key"]]
+    left, order = {e["key"]: e for e in open_}, []
+    while left:  # O(n^2) over a room's handful of PRs
+        free = [e for e in left.values() if not any(k in left for k in e["mergesAfter"])]
+        pick = min(free or left.values(), key=lambda e: idx.get(e["ticket"], len(idx)))  # a cycle breaks at the first
+        order.append(left.pop(pick["key"]))
+    depth = {}
+    for i, e in enumerate(order, 1):
+        e["order"] = i
+        e["depth"] = depth[e["key"]] = (depth.get(e["stacksOn"], -1) + 1) if e["stacksOn"] else 0
+    for e in order:  # ready to merge now: nothing ahead of it in the train either
+        e["ready"] = bool(e.get("ready")) and not e["mergesAfter"] and not e["waitsOn"]
+    first = next((e for e in order if not e["mergesAfter"] and not e["waitsOn"]), None)
+    if first:
+        first["next"] = True
+    rest = sorted((e for e in entries if e["state"] != "OPEN"), key=lambda e: e.get("mergedAt") or "", reverse=True)
+    return order + rest
+
+
+def pr_signature(e):
+    """What a `ci` event reports: a change in any part of it is logged, nothing else is."""
+    c, states = e["ci"], [r["state"] for r in e["reviews"]]
+    ci = (f"failed: {', '.join(c['failing'][:3])}" if c["failed"] else "running" if c["running"]
+          else "passed" if c["passed"] else "none")
+    review = ("changes requested" if "CHANGES_REQUESTED" in states else
+              f"approved by {states.count('APPROVED')}" if "APPROVED" in states else "no review")
+    return f"{e['state'].lower()}; CI {ci}; review {review}; {e['mergeable'].lower()}"
+
+
+def prs(a):
+    if not os.path.isdir(a.dir):
+        return fail("prs", f"--dir {a.dir} is not a directory")
+    lock = os.open(a.dir, os.O_RDONLY)
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # the mod, the orchestrator and the Refresh button
+        except BlockingIOError:
+            print("room prs: another room prs is checking GitHub for this room; left it to finish")
+            return 0
+        return check_prs(a.dir)
+    finally:
+        os.close(lock)
+
+
+def check_prs(d):
+    path = os.path.join(d, "prs.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            old = json.load(f)
+    except (OSError, ValueError):
+        old = {}
+    before = {e.get("ticket"): e for e in old.get("prs") or [] if isinstance(e, dict)}
+    tickets, entries, errors, fetched, logged = raw_tickets(d), [], [], 0, 0
+    for t in tickets:
+        if not isinstance(t.get("id"), str):
+            continue
+        b = before.get(t["id"], {})
+        if not (t.get("pr") or t.get("prUrl") or t.get("branch") or b):
+            continue
+        repo, number = repo_of(t, b), pr_number(t, b)
+        if not repo:
+            if number:
+                errors.append(f"{t['id']}: no repo for #{number}; set prUrl or worktree")
+            continue
+        try:
+            if not number:
+                hits = json.loads(gh("pr", "list", "--repo", repo, "--head", t["branch"], "--state", "open",
+                                     "--json", "number", "--limit", "1"))
+                if not hits:
+                    continue  # a branch with no open PR yet
+                number = hits[0]["number"]
+            e = fetch_pr(repo, number)
+        except (GhError, ValueError, KeyError) as err:
+            errors.append(f"{t['id']}: {err}" if not isinstance(err, GhError) else str(err))
+            if b:
+                entries.append(b)  # keep the last good data
+            continue
+        fetched += 1
+        e.update(ticket=t["id"], feature=t.get("feature"), session=t.get("session"), sessionId=t.get("sessionId"),
+                 builtBy="factory" if t.get("linear") or t.get("state") == "FACTORY" else "session",
+                 readOnly=bool(t.get("source")), linearIssue=t.get("linearIssue") or t.get("linear"))
+        e["ready"] = is_ready(e)
+        if b.get("ci") and not e["readOnly"] and pr_signature(b) != pr_signature(e):
+            event(d, t["id"], "github", "ci", f"#{e['number']} {pr_signature(e)}"[:MAX_NOTE])
+            logged += 1
+        entries.append(e)
+    errors = list(dict.fromkeys(errors))
+    doc = {"checkedAt": now() if fetched or not errors else old.get("checkedAt"),
+           "error": (errors[0] + (f" (and {len(errors) - 1} more)" if len(errors) > 1 else "")) if errors else None,
+           "prs": merge_order(entries, tickets)}
+    write_json(path, doc)
+    n_open = sum(1 for e in doc["prs"] if e["state"] == "OPEN")
+    print(f"room prs: {len(doc['prs'])} PRs, {n_open} unmerged, {logged} changes logged"
+          + (f"; {doc['error']}" if doc["error"] else ""))
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="room")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -804,10 +1051,11 @@ def main(argv=None):
     adp.add_argument("--feature", required=True, help="the feature slug it becomes, features/<slug>/")
     adp.add_argument("--source", required=True, help="that run's state dir")
     cmd("refresh", "re-copy each adopted run's tickets onto this room's board; writes only this room", ticket=False)
+    cmd("prs", "read each ticket's PR from GitHub into prs.json, with the merge order; no polling", ticket=False)
 
     a = p.parse_args(argv)
     return {"log": log, "ask": ask, "signoff": signoff, "start": start, "render": render, "tier": tier,
-            "podium": podium, "join": join, "new": new, "adopt": adopt, "refresh": refresh}[a.cmd](a)
+            "podium": podium, "join": join, "new": new, "adopt": adopt, "refresh": refresh, "prs": prs}[a.cmd](a)
 
 
 if __name__ == "__main__":
