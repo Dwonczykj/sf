@@ -4,7 +4,8 @@
 # keyed by version, so a change that ships without a bump silently never reloads
 # (`claude plugin update` copies nothing). This makes the bump automatic.
 #
-# It never blocks a commit: any problem just skips the bump and exits 0.
+# It blocks a commit only when scripts/docs_test.py finds something sf ships that README.md or
+# docs/ don't mention; any other problem just skips the bump and exits 0.
 #
 # Install:
 #   - standalone Dwonczykj/sf clone:  git config core.hooksPath .githooks
@@ -25,6 +26,11 @@ rel=${plugin_root#"$repo_root"/}
 # Nothing staged under the plugin? Not our concern.
 staged=$(git diff --cached --name-only -- "$rel" 2>/dev/null)
 [ -n "$staged" ] || exit 0
+
+# Docs stay current: a command, skill, agent or room subcommand with no doc line fails the commit.
+if [ -f "$plugin_root/scripts/docs_test.py" ] && command -v python3 >/dev/null 2>&1; then
+  docs_out=$(python3 "$plugin_root/scripts/docs_test.py" 2>&1) || { echo "sf: $docs_out" >&2; exit 1; }
+fi
 
 extract_version() {
   # first "version": "x.y.z" in the manifest

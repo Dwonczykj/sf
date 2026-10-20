@@ -41,7 +41,7 @@ flowchart TD
 
 Worker provider (build + test agents) follows `/sf:model-provider`; the review panel stays cross-vendor. The deterministic version of the per-slice loop is `sf:build-verify`.
 
-All commands share one state contract: `.scratch/<slug>/` holding `progress.md` (phase checklist + gate outcomes), `requirements.md` (the locked acceptance contract), and `split.md` (the slice plan). Commands that don't take a slug locate the feature by: slug arg → current git branch → most-recently-modified `.scratch/*/progress.md` → ask.
+All commands share one state contract: a state dir (`.scratch/<slug>/` in the worktree, or `~/FyxerGh/build-room/<slug>/` once a run is orchestrated or lives in a topic room; [docs/build-room.md](docs/build-room.md) describes the room's extra files) holding `progress.md` (phase checklist + gate outcomes), `requirements.md` (the locked acceptance contract), and `split.md` (the slice plan). Commands that don't take a slug locate the feature by: slug arg → current git branch → most-recently-modified `.scratch/*/progress.md` → ask.
 
 | Command | Does |
 |---|---|
@@ -51,12 +51,17 @@ All commands share one state contract: `.scratch/<slug>/` holding `progress.md` 
 | `sf:investigate <report>` | Start from a reported bug instead of a feature idea: grill, root-cause, problems + requirements, decide on a spec, then run the factory from Phase 2 onward. |
 | `sf:continue [slug]` | Read `progress.md`, resume from the first pending phase. |
 | `sf:orchestrate [slug] [--adopt]` | Run a split of more than two slices as parallel worker sessions behind one state board; `--adopt` takes over a build already under way. It also runs topic rooms: tasks that start freely, several features, light builds, an optional Linear mirror, and other runs adopted by reference. Each wake runs `room prs`, which reads every PR the room built from GitHub (read-only) into `prs.json` with their merge order; the Room UI and the build-room-view mod show it as a merge train. How its sessions talk to each other: [docs/build-room.md](docs/build-room.md). |
+| `sf:adopt` | Seed the factory from this session's context (and any existing spec), cut a branch, then run `start-feature` from the first unmet gate. |
+| `sf:adopt-no-plan` | Like `sf:adopt`, but infers `requirements.md` and `split.md` from the session and runs straight through build, verify and review without the plan gates. |
+| `sf:adopt-from-pr [PR]` | Seed the factory from an existing PR or stack: judge whether it needs a spec, write one through `opsx:propose` if so, then green the PRs. |
 | `sf:plan [idea\|PRE-####]` | Phases 0–2 only: frame, scope + lock `requirements.md`, split. Stops at split approval. |
 | `sf:build [slug\|slice]` | Worktree + 3-model plan review + build + tests for a slice, as prose (model-driven). Commits locally, no push. |
 | `sf:build-verify [slug]` | Same Phase 3 machine as a **deterministic Workflow**: schema'd `PLAN OK`/`RELEASE` verdicts, `parallel()` thunks over the three review seats (resolved by the entry command, since the script has no filesystem access), capped build↔verify loop over a wave of independent slices, to pre-PR RELEASE. Halts back to you for width questions. Never pushes. |
 | `sf:review [branch\|PR\|slug]` | `review-feature`: gate pre-PR (3 models), open PR on RELEASE, loop CI + bots to green. |
 | `sf:ci-green [PR]` | Just the CI/bot loop: `fix-bot-comments` until all checks green + threads resolved, asking before any fix that adds more complexity than the feature warrants. |
 | `sf:fix-pr [PR]` | Same green-gate as `sf:ci-green`, but reviews the diff on two review seats *before* each push so fewer bot round-trips are needed. |
+| `sf:models` | Set or show the model for each role (planReview, build, tests, verify), with per-run flag overrides. |
+| `sf:model-provider [anthropic\|codex\|cursor]` | Switch the vendor the build and test sub-agents run on, to manage usage limits; the review panel stays cross-vendor. |
 | `sf:view-agents` | Open the local agent-team dashboard (starts its dev server on :7777 first if needed). |
 | `sf:room [start\|stop\|status\|rooms\|new <topic>\|close <room>\|join]` | Start, stop or check the agent-team Build Room (:7777) and Podium (:4317), and log each one's memory once a minute (`scripts/roomui`). `stop` then offers to close each room, archiving it to `~/FyxerGh/build-room/.closed/`. `join` adds the current hand-started session to a run: it asks which ticket, then appends a `join` event the orchestrator folds in. `new <topic>` opens a topic room with no contract, this session as its orchestrator, after asking once whether to mirror it to Linear. Closing a room archives its finished task sessions and prunes their worktrees only when merged, clean and named by no open ticket. |
 
@@ -127,15 +132,17 @@ Each kind of outside tool has one skill that knows the vendors; everything else 
 | `check-ui` | Claude in Chrome, the built-in browser pane, Playwright MCP | the gate notes that UI was not checked |
 | `build-route` | the Fyxer factory (a cloud session on your Routine builds a Linear ticket, opens the PR and merges it once its gate passes), offered at each slice's build start | building locally, recommended when the slice needs local access, scores high, waits on an open PR, looks contested, or the repo has no factory |
 
-Checks: `python3 skills/review-seat/scripts/seats_test.py`, `python3 scripts/room_test.py` and `node scripts/build_verify_slice_test.mjs`.
+Checks: `python3 skills/review-seat/scripts/seats_test.py`, `python3 scripts/room_test.py`, `python3 scripts/roomui_test.py`, `python3 scripts/docs_test.py` and `node scripts/build_verify_slice_test.mjs`.
 
 ## Edit
 
 Edit the `.md` files in `commands/` directly, then reinstall (or restart) to pick up changes.
 
+Keep the docs in the same commit as the change: a new or renamed command, skill or agent gets its README line, and a new room or roomui subcommand gets its row in [docs/build-room.md](docs/build-room.md). `scripts/docs_test.py` checks this, and the dev hook below runs it and refuses the commit when something is missing.
+
 ### Auto version bump (dev hook)
 
-The plugin cache is keyed by `plugin.json`'s `version`, so a change shipped without a bump silently never reloads. `.githooks/pre-commit` fixes this: when a commit stages plugin files but doesn't already change the version, it bumps the patch and stages `plugin.json`. It never blocks a commit — any problem just skips the bump. Install it once per clone (git can't auto-enable checked-in hooks):
+The plugin cache is keyed by `plugin.json`'s `version`, so a change shipped without a bump silently never reloads. `.githooks/pre-commit` fixes this: when a commit stages plugin files but doesn't already change the version, it bumps the patch and stages `plugin.json`. It first runs `scripts/docs_test.py` and refuses the commit if the docs miss something; any other problem just skips the bump. Install it once per clone (git can't auto-enable checked-in hooks):
 
 ```bash
 # standalone Dwonczykj/sf clone (plugin at repo root):

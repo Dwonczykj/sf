@@ -42,6 +42,27 @@ Each room lives in `~/FyxerGh/build-room/<slug>/`. Each file has one writer, enf
 | `tasks/<id>.md`, `tasks/<id>/` | the task that ran | its findings, under 40 lines; a design task's chosen screenshots |
 | `light/<id>.md` | the orchestrator, signed by the human | a light build's 1 to 5 numbered requirements |
 
+## The room CLI
+
+`<state dir>/room` (a copy of `scripts/room`) is how every session touches a room's files. Each subcommand:
+
+| Subcommand | Who runs it | What it does |
+|---|---|---|
+| `log` | every session | appends one validated event to `events.jsonl` |
+| `ask` | orchestrator | appends a question shaped like an `AskUserQuestion` card |
+| `signoff` | the Room UI server, or the orchestrator with the human's words | appends an answer, gate sign-off or free message to `signoffs.jsonl` |
+| `start` | orchestrator | refuses a ticket whose human gates have no sign-off, else prints what to start |
+| `tier` | orchestrator | prints the human's standing model and effort override for a ticket, or null |
+| `join` | any session started by hand | appends a `join` event so the orchestrator adds that session to the room |
+| `render` | orchestrator | writes `progress.md` from `tickets.json` and the open questions |
+| `podium` | orchestrator | reads Podium's fleet state and logs a blocker once per new stuck or waiting worker |
+| `new` | the session that becomes orchestrator | makes a topic room with no contract |
+| `adopt` | orchestrator | adds another run to the room as a feature, by reference |
+| `refresh` | orchestrator | copies adopted runs' tickets onto this room's board, never writing to those runs |
+| `prs` | orchestrator, the mod, the Room UI's Refresh | reads every PR the tickets name from GitHub into `prs.json` |
+
+`scripts/roomui` runs the two local servers behind `/sf:room` (`start`, `stop`, `status`, `rooms`, `close`, `closeout`, `sampler`).
+
 ## Bringing sessions into a room
 
 - **Sessions the orchestrator starts.** It starts one session per slice with `start_session` and sends each the worker contract.
