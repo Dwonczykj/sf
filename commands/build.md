@@ -5,6 +5,8 @@ Run the software-factory build phase for a slice (start-feature Phase 3, steps 1
 
 Feature: infer from the current branch / most-recent `.scratch/*/`, or the slug arg ($ARGUMENTS). Read `requirements.md` and `split.md`. Pick the slice: the arg names it, else the next unbuilt slice in dependency order (independent leaves may run in parallel). Build each slice in a fresh context window: at the start of every slice after the first, hand the run to a new session via `sf:fork-session`, per "One fresh session per slice" in the `start-feature` skill's Phase 3.
 
+Before anything else for the slice, run the `build-route` skill. On FACTORY it hands the slice to the factory and watches it; build nothing for that slice and stop here. On LOCAL, go on.
+
 Models (per role): resolve each role's model once — per-run flag → `~/.claude/sf-models.json` (set by `/sf:models`) → blanket `--model` → default. In this prose path the only spawned Claude sub-agents are `build` (the build agent, default `claude-opus-5-5`) and `tests` (T1/T2/T3, default `claude-sonnet-5-5`); plan review runs inline (through `review-seat`, no Claude driver), so its model is this chat session's, not a role. Per-run flags in the args (strip before slug inference): `--build-model`, `--test-model`, and `--model` as the blanket for both. (The `planReview`/`verify` role models apply to the deterministic `sf:build-verify` workflow, where those drivers are sub-agents.)
 
 Provider: read `~/.claude/sf-model-provider` (missing = `anthropic`; set by `/sf:model-provider`) and route the build + test workers per its contract. For `codex` or `cursor`, first run `python3 ${CLAUDE_PLUGIN_ROOT}/skills/review-seat/scripts/seats.py probe <codex|cursor>`; on `"ok": false` use `anthropic` and tell me why.

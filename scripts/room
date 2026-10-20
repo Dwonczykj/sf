@@ -30,12 +30,14 @@ from datetime import datetime, timezone
 
 TYPES = ("state", "question", "answer", "blocker", "ci", "note", "model", "join")
 # Board states from start-feature's "Board format". A state event's note starts with one of these.
+# FACTORY: handed to the cloud factory (build-route), which builds, gates and merges it.
 STATES = ("PROBE", "NOT STARTED", "BUILDING", "WAITING ON JOEY", "LOCAL", "PUSHED", "DRAFT PR", "PR",
-          "COMPLEXITY REVIEW", "DONE", "MERGED")
+          "COMPLEXITY REVIEW", "DONE", "FACTORY", "MERGED")
 GATES = ("framed", "requirements", "grilled", "impact", "steward", "split", "spec", "planReview", "gate",
          "ci", "complexity")
 FIELDS = ("id", "title", "kind", "queue", "state", "after", "stacksOn", "worktree", "branch", "pr", "sha",
-          "ci", "session", "sessionId", "needs", "gates", "note", "model", "effort", "complexity", "blast", "budget")
+          "ci", "session", "sessionId", "needs", "gates", "note", "model", "effort", "complexity", "blast", "budget",
+          "linear", "prUrl")
 NAME = re.compile(r"^[A-Za-z0-9][\w.-]{0,63}$")
 SESSION_ID = re.compile(r"^local_[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 SHA = re.compile(r"^[0-9a-f]{7,40}$")
@@ -222,11 +224,17 @@ def signed(signoffs, gate, ticket):
     return any(s.get("gate") == gate and s.get("ticket") in names for s in signoffs)
 
 
+def needs_complexity(t):
+    # The factory merges a FACTORY ticket's PR itself once its gate passes (Joey's choice), so there is no
+    # complexity review to sign; a ticket with a factory `linear` id is exempt.
+    return t["state"] in ("COMPLEXITY REVIEW", "DONE", "MERGED") and not t.get("linear")
+
+
 def missing_gates(t, signoffs):
     need = ["requirements", "split"]
     if (t.get("gates") or {}).get("spec", "none") != "none":
         need.append("spec")
-    if t["state"] in ("COMPLEXITY REVIEW", "DONE", "MERGED"):
+    if needs_complexity(t):
         need.append("complexity")
     return [g for g in need if not signed(signoffs, g, t["id"])]
 
@@ -286,7 +294,7 @@ def tree_lines(tickets):
     width = max((len(p) + len(l) for p, l, _ in rows), default=0) + 2
     lines = ["staging"]
     for prefix, label, t in rows:
-        head = t["state"] + (f" {t['note']}" if t.get("note") else "")
+        head = " ".join(x for x in (t["state"], t.get("linear"), t.get("note")) if x)
         if t["state"] == "NOT STARTED" and not t.get("note"):
             waits = [x for x in [t.get("stacksOn")] + (t.get("after") or []) if x]
             head += f" (needs {', '.join(dict.fromkeys(waits))})" if waits else ""
@@ -311,7 +319,8 @@ def render(a):
         return fail("render", error)
     signoffs = read_jsonl(os.path.join(a.dir, "signoffs.jsonl"))
     unsigned = [t["id"] for t in doc["tickets"]
-                if t["state"] in ("DONE", "MERGED") and not signed(signoffs, "complexity", t["id"])]
+                if t["state"] != "COMPLEXITY REVIEW" and needs_complexity(t)
+                and not signed(signoffs, "complexity", t["id"])]
     if unsigned:
         return fail("render", f"DONE needs Joey's complexity sign-off first: {', '.join(unsigned)}", 1)
     slug = doc.get("slug") or os.path.basename(os.path.abspath(a.dir))

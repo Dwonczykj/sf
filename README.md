@@ -60,7 +60,7 @@ All commands share one state contract: `.scratch/<slug>/` holding `progress.md` 
 | `sf:view-agents` | Open the local agent-team dashboard (starts its dev server on :7777 first if needed). |
 | `sf:room [start\|stop\|status\|rooms\|close <room>\|join]` | Start, stop or check the agent-team Build Room (:7777) and Podium (:4317), and log each one's memory once a minute (`scripts/roomui`). `stop` then offers to close each room, archiving it to `~/FyxerGh/build-room/.closed/`. `join` adds the current hand-started session to a run: it asks which ticket, then appends a `join` event the orchestrator folds in. |
 
-The phase commands delegate to skills bundled with this plugin under `skills/` — `gather-requirements`, `pr-split-audit`, `solve-in-worktrees`, `review-feature`, `pre-pr-gate`, `fix-bot-comments`, `discussion-room`, `create-branch`, `create-pr`, `review-seat` (with its `codex-agent` and `cursor-agent` adapters), `query-data`, `make-sheet`, `check-ui`, `diff-review`, `commit-hang-guard`, `lint-in-ignored-worktree`, `linear-update-issue-on-pr-merge`, `prune-merged-worktrees`, `setup-worktree-webapp`, `get-worktree`, `repo-instructions`, `steward`, `size-change-impact` and `measure-change-impact` (both run the bundled `sf:impact-analyst` agent, and read data only through `query-data`), `fork-session`, `start-feature` itself. One implementation each, no forks. `grill-me` is the one exception: it's not bundled here because it already ships in the separate `anthropic-skills` plugin, which most installs already have.
+The phase commands delegate to skills bundled with this plugin under `skills/` — `gather-requirements`, `pr-split-audit`, `solve-in-worktrees`, `review-feature`, `pre-pr-gate`, `fix-bot-comments`, `discussion-room`, `create-branch`, `create-pr`, `review-seat` (with its `codex-agent` and `cursor-agent` adapters), `query-data`, `make-sheet`, `check-ui`, `diff-review`, `commit-hang-guard`, `lint-in-ignored-worktree`, `linear-update-issue-on-pr-merge`, `prune-merged-worktrees`, `setup-worktree-webapp`, `get-worktree`, `repo-instructions`, `steward`, `build-route`, `size-change-impact` and `measure-change-impact` (both run the bundled `sf:impact-analyst` agent, and read data only through `query-data`), `fork-session`, `start-feature` itself. One implementation each, no forks. `grill-me` is the one exception: it's not bundled here because it already ships in the separate `anthropic-skills` plugin, which most installs already have.
 
 ### Portability
 
@@ -125,8 +125,9 @@ Each kind of outside tool has one skill that knows the vendors; everything else 
 | `query-data` | gcloud (Logging, BigQuery) | "not measured" and why, never a guessed number |
 | `make-sheet` | gws | a CSV plus an artifact table |
 | `check-ui` | Claude in Chrome, the built-in browser pane, Playwright MCP | the gate notes that UI was not checked |
+| `build-route` | the Fyxer factory (a cloud session on your Routine builds a Linear ticket, opens the PR and merges it once its gate passes), offered at each slice's build start | building locally, recommended when the slice needs local access, scores high, waits on an open PR, looks contested, or the repo has no factory |
 
-Checks: `python3 skills/review-seat/scripts/seats_test.py` and `node scripts/build_verify_slice_test.mjs`.
+Checks: `python3 skills/review-seat/scripts/seats_test.py`, `python3 scripts/room_test.py` and `node scripts/build_verify_slice_test.mjs`.
 
 ## Edit
 

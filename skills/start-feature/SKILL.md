@@ -73,6 +73,7 @@ Worker models + provider: the build + test sub-agents' models follow `~/.claude/
 
 Per slice, in dependency order (independent leaves in parallel):
 
+0. **Where to build it** 🔒: run **`build-route`** before anything else for the slice. It recommends building locally or in the Fyxer factory and asks you once. On LOCAL, go on with step 1. On FACTORY it writes and labels the factory ticket, watches the run from this session and runs Phase 4 for the slice on merge; skip steps 1 to 7 for that slice. The session watching it edits no worktree, so the next slice may still be forked while it watches.
 1. **Worktree + plan** — follow **`solve-in-worktrees`** Phases 1–2: one sibling worktree off `origin/staging` (branch per `create-branch`), `pnpm i`, then the slice's requirements + solution written out. Run **`repo-instructions`** (consume step): append the matched rules under a `## Repo build-checks (sf:repo-instructions)` heading in the slice's `requirements.md`, so the build agent and verify/test agents carry the **Check** and the non-Claude vendors see the rule. **If a Phase 2.5 spec exists and this is the first slice in merge order**, copy `openspec/changes/<slug>/` into this worktree and commit it on its branch (a `docs: add <slug> openspec change` commit is fine) so the spec ships in this slice's PR — no separate spec PR.
 2. **Review the plan before building** 🔒 — **`solve-in-worktrees`** Phase 2b: the three seats of the `review-seat` panel (Codex, Gemini and Cursor where installed, else Claude models) review the same plan concurrently against the real codebase — requirement coverage, root cause vs symptom, reuse it's reinventing, blast radius, ambiguity. Cap 2 rounds. It also checks the plan is concrete enough to write tests against, since the approved plan — not the built code — is what the test agents work from. Ambiguity findings come back to you; the approved plan goes to the build agent **and** to T1 at the same moment.
 3. **Build + tests, concurrently** — **`solve-in-worktrees`** Phases 3 and 3b: a build agent carrying the approved plan + repo standards (source files only), running alongside three test agents (test files only, routed like the build agent) — T1 test-requirement gathering, T2 create, T3 update. T1 and T2 work from the **plan**, so tests exist before the code and the suite is deliberately red until the build lands; T1 re-runs over the first diff for behaviour the plan never named, before the verify passes fire. A plan-derived test that disagrees with the implementation is a build finding — the plan wins — unless the plan detail itself was wrong, which comes back to you. All commit locally; sub-agents can't push.
@@ -112,7 +113,7 @@ Open questions for Joey:
 - Q2: ...
 ````
 
-States, in order: PROBE (never committed to a PR), NOT STARTED (blocker named), BUILDING, WAITING ON JOEY, LOCAL, PUSHED, DRAFT PR, PR (with "blocked by" PRs and pre-merge probes), COMPLEXITY REVIEW (green, waiting on Joey's cuts), DONE, MERGED. Each tree line carries the head SHA and CI state.
+States, in order: PROBE (never committed to a PR), NOT STARTED (blocker named), BUILDING, WAITING ON JOEY, LOCAL, PUSHED, DRAFT PR, PR (with "blocked by" PRs and pre-merge probes), COMPLEXITY REVIEW (green, waiting on Joey's cuts), DONE, FACTORY (handed to the cloud factory by `build-route`; it builds, gates and merges the slice), MERGED. Each tree line carries the head SHA and CI state.
 
 ## Phase 4 — Close out
 
@@ -158,6 +159,7 @@ Cover every turn including the ones that changed direction or corrected an earli
 | after Phase 1 | contract signed off, budget included | human |
 | after Phase 2 | split approved | human |
 | after the split, before build | spec required? if yes, Opus 4.8 High agent grills then runs `openspec-propose`, each artifact signed off | human (optional) |
+| start of each slice | `build-route`: build locally or in the factory | human |
 | during plan review, before `PLAN OK` | width questions answered — which behaviour of the touched code the tests will freeze (pin / leave / it's a bug) | human |
 | after the plan, before the build | plan review `PLAN OK` from **all three** panel seats — releases the plan to the build agent *and* to T1 | tool (3 seats) |
 | plan-derived test vs implementation | plan wins → build finding; wrong plan detail → your call | tool + human |

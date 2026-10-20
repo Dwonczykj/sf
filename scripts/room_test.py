@@ -306,4 +306,28 @@ with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as home:
     assert "Podium is not answering at" in podium()
     assert len(blockers()) == 6
 
+with tempfile.TemporaryDirectory() as d:
+    # FACTORY: a slice build-route sent to the cloud factory. It carries its Linear id and PR url, and goes
+    # MERGED without a complexity sign-off, since the factory merges it; a local ticket still needs one.
+    ok = run(d, "--ticket", "s1", "--role", "factory", "--type", "state", "--note", "FACTORY PRE-1 labelled")
+    assert ok.returncode == 0, ok.stderr
+    tickets = {"slug": "demo", "tickets": [
+        {"id": "s1", "title": "slice 1", "state": "FACTORY", "linear": "PRE-1", "pr": 15001,
+         "prUrl": "https://github.com/o/r/pull/15001"},
+        {"id": "s2", "title": "slice 2", "state": "NOT STARTED", "after": ["s1"]},
+    ]}
+    with open(os.path.join(d, "tickets.json"), "w") as f:
+        json.dump(tickets, f)
+    assert run(d, cmd="render").returncode == 0
+    assert "#15001  slice 1" in open(os.path.join(d, "progress.md")).read()
+    assert "FACTORY PRE-1" in open(os.path.join(d, "progress.md")).read()
+    tickets["tickets"][0]["state"] = "MERGED"
+    with open(os.path.join(d, "tickets.json"), "w") as f:
+        json.dump(tickets, f)
+    assert run(d, cmd="render").returncode == 0
+    tickets["tickets"][0].pop("linear")
+    with open(os.path.join(d, "tickets.json"), "w") as f:
+        json.dump(tickets, f)
+    assert run(d, cmd="render").returncode == 1
+
 print("room_test: ok")
