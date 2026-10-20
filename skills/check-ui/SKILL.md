@@ -5,7 +5,7 @@ description: Open a page of the app a branch changes, look at it, and check it a
 
 # check-ui
 
-The caller gives the URL of a running copy of the app (a local dev server, or a preview deploy of this branch), the pages or states the diff changes, and where the repo's design rules live (its frontend standards and design-system docs, or what `repo-instructions` holds for it).
+The caller gives the URL of a running copy of the app (a local dev server, or a preview deploy of this branch), the pages or states the diff changes, and where the repo's design rules live (its frontend standards and design-system docs, or what `repo-instructions` holds for it). When the slice builds a chosen design (a topic room's design task), the caller also gives that design's screenshot dir (`<page>-desktop.png`, `<page>-375.png`).
 
 ## 1. Pick the browser
 
@@ -25,6 +25,7 @@ For each page or state the diff changes:
 - Read the console for errors raised while it loaded or while you exercised the change.
 - Exercise only the change's own flow (open the modal, pick the option) with test data. Sign in only with the repo's own test accounts on a local or preview host, never with anyone's real login, and submit nothing outward-facing.
 - Compare what you see with the design rules: components from the design system rather than hand-rolled ones, the loading, empty and error states, spacing and type from the tokens, and text that fits at 375px.
+- With a chosen design, compare each page's screenshots with the design's at the same width: layout and order, which components, copy, and states shown. A part of the design that is missing or different is a **P1**, unless the slice's contract says it differs on purpose.
 
 Report findings the gate's way: **P0** the page is broken, blank, throws, or the change isn't visible; **P1** a design-rule breach a reviewer would flag; **P2** a nit. Name the browser used, the URL and the screenshots.
 

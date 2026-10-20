@@ -11,7 +11,9 @@ The factory is defined by the repo's own `factory` skill (`.claude/skills/factor
 
 ## 1. Recommend
 
-Recommend **LOCAL** if any of these hold, else **FACTORY**. Stop at the first that holds; it is the reason.
+Recommend **LOCAL** if any of these hold, else **FACTORY**. Stop at the first that holds; it is the reason. A light build in a topic room (`kind` `light`, `commands/orchestrate.md` "Light builds") is checked the same way, so the factory is its recommended route unless one of these holds.
+
+In a topic room, read a slice's contract from its feature's dir, `features/<slug>/` (`requirements.md`, `split.md`), and a light build's from `light/<id>.md` with its scores on its ticket, wherever this skill says `requirements.md` or `split.md`.
 
 - **No factory here.** The repo is not `Fyxer-AI/web-app`, `Fyxer-AI/fyxer-admin` or `Fyxer-AI/desktop-app`, or you can't find the `factory` skill. Then skip the question below: say in one line that this slice builds locally and why, and return LOCAL.
 - **No Routine.** Joey has no `Fyxer factory` Routine, or it lacks this repo. Check as the factory skill's `handoff.md` step 1 does.

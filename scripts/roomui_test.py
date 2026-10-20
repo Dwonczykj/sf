@@ -112,4 +112,61 @@ with tempfile.TemporaryDirectory() as d:
         assert "roomui close <room>" in out.getvalue() and roomui.room_names()
     finally:
         builtins.input, roomui.sys.stdin.isatty = real_input, real_isatty
+# closeout: which task and build sessions to archive and which of their worktrees to prune, from real git worktrees
+import subprocess
+room_loader = importlib.machinery.SourceFileLoader("room_cli", os.path.join(HERE, "room"))
+room_cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("room_cli", room_loader))
+room_loader.exec_module(room_cli)
+assert roomui.TASKS == tuple(room_cli.TASKS), "roomui's TASKS must match room's"
+
+
+def sh(*args, cwd):
+    out = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+with tempfile.TemporaryDirectory() as d:
+    origin, main = os.path.join(d, "origin.git"), os.path.join(d, "main")
+    sh("git", "init", "-q", "--bare", "-b", "staging", origin, cwd=d)
+    sh("git", "clone", "-q", origin, main, cwd=d)
+    for k, v in (("user.email", "t@example.com"), ("user.name", "t"), ("commit.gpgsign", "false")):
+        sh("git", "config", k, v, cwd=main)
+    sh("git", "commit", "-q", "--allow-empty", "-m", "base", cwd=main)
+    sh("git", "push", "-q", "origin", "HEAD:staging", cwd=main)
+    wts = {}
+    for name in ("merged", "dirty", "unmerged", "inuse"):
+        wts[name] = os.path.join(d, f"wt-{name}")
+        sh("git", "worktree", "add", "-q", "-b", f"j/{name}", wts[name], "origin/staging", cwd=main)
+    open(os.path.join(wts["dirty"], "x.txt"), "w").write("wip")
+    open(os.path.join(wts["unmerged"], "y.txt"), "w").write("only here")
+    sh("git", "add", "y.txt", cwd=wts["unmerged"])
+    sh("git", "commit", "-q", "-m", "only here", cwd=wts["unmerged"])
+
+    roomui.STATE = os.path.join(d, "rooms")
+    task = lambda id_, state, wt=None, **x: {"id": id_, "title": id_, "kind": "prototype", "state": state,
+                                             "session": f"s-{id_}", "sessionId": f"local_{id_}",
+                                             **({"worktree": wts[wt], "branch": f"j/{wt}"} if wt else {}), **x}
+    write_room(roomui.STATE, "topic", [event(1, 3000, "note")], [
+        task("t1", "DONE", "merged"), task("t2", "DONE", "dirty"), task("t3", "DONE", "unmerged"),
+        task("t4", "DONE", "inuse"), task("t5", "BUILDING"), {"id": "x1", "title": "x", "kind": "explore", "state": "DONE"},
+        task("t6", "DONE"), {"id": "b1", "title": "b", "kind": "slice", "state": "MERGED", "session": "s-b1"},
+        {"id": "b2", "title": "b", "kind": "slice", "state": "PR", "session": "s-b2"},
+        task("a.t7", "DONE", source="/elsewhere"),
+    ])
+    write_room(roomui.STATE, "other", [event(1, 3000, "note")], [{"id": "o1", "title": "o", "state": "PR", "branch": "j/inuse"}])
+    plan = roomui.closeout("topic")
+    assert [x["ticket"] for x in plan["archive"]] == ["t1", "t2", "t3", "t4", "t6", "b1"], plan["archive"]
+    assert plan["archive"][0] == {"ticket": "t1", "session": "s-t1", "sessionId": "local_t1"}
+    assert [(x["ticket"], x["why"]) for x in plan["keepSessions"]] == [("t5", "task is BUILDING, not finished"),
+                                                               ("b2", "build is PR, not finished")]
+    assert [x["ticket"] for x in plan["prune"]] == ["t1"], plan
+    why = {x["ticket"]: x["why"] for x in plan["keepWorktrees"]}
+    assert why == {"t2": "has uncommitted changes", "t3": "branch j/unmerged is not merged into origin/staging",
+                   "t4": "branch j/inuse is named by open ticket other/o1"}, why
+    assert os.path.isdir(wts["merged"]), "closeout must change nothing"
+    assert roomui.closeout("missing") is None and roomui.closeout("../x") is None
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        assert roomui.cmd_closeout(["topic"], "staging") == 0 and roomui.cmd_closeout([], "staging") == 2
+    assert json.loads(out.getvalue().split("closeout needs")[0])["room"] == "topic"
 print("roomui ok")

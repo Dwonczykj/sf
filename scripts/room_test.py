@@ -330,4 +330,245 @@ with tempfile.TemporaryDirectory() as d:
         json.dump(tickets, f)
     assert run(d, cmd="render").returncode == 1
 
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def put_tickets(d, doc):
+    with open(os.path.join(d, "tickets.json"), "w") as f:
+        json.dump(doc, f)
+
+
+def evs(d):
+    return [json.loads(l) for l in open(os.path.join(d, "events.jsonl"))]
+
+
+with tempfile.TemporaryDirectory() as root:
+    # new: a topic room with no contract, this session as orchestrator, and Joey's Linear answer.
+    d = os.path.join(root, "topic-a")
+    sid = "local_0a1b2c3d-0a1b-0a1b-0a1b-0a1b2c3d4e5f"
+    r = run(d, "--name", "topic-a-orch", "--session-id", sid, "--linear", "mirror", "--team", "ENG", cmd="new")
+    assert r.returncode == 0, r.stderr
+    doc = json.load(open(os.path.join(d, "tickets.json")))
+    assert doc["topic"] is True and doc["orchestrator"] == "topic-a-orch" and doc["orchestratorSessionId"] == sid
+    assert doc["linear"] == {"mirror": True, "team": "ENG", "project": None, "milestones": {}, "updates": {}}
+    assert doc["tickets"] == [] and doc["adopted"] == {}
+    assert all(os.path.isdir(os.path.join(d, x)) for x in ("tasks", "features", "light"))
+    assert os.path.isfile(os.path.join(d, "room")) and "mirrored to Linear" in evs(d)[0]["note"]
+    board = open(os.path.join(d, "progress.md")).read()
+    assert "Linear: mirrored to a project not made yet in ENG" in board, board
+    assert run(d, "--name", "x", "--linear", "no", cmd="new").returncode != 0  # already a room
+    for args in (["--name", "x", "--linear", "mirror"], ["--name", "x", "--linear", "no", "--team", "ENG"],
+                 ["--name", "bad name", "--linear", "no"], ["--name", "x", "--linear", "maybe"]):
+        assert run(os.path.join(root, "topic-b"), *args, cmd="new").returncode != 0, args
+    assert run(os.path.join(root, "bad topic"), "--name", "x", "--linear", "no", cmd="new").returncode != 0
+    r = run(os.path.join(root, "topic-c"), "--name", "x", "--linear", "no-connector", cmd="new")
+    assert r.returncode == 0 and "not mirrored (no Linear connector)" in r.stdout + open(
+        os.path.join(root, "topic-c", "progress.md")).read(), r.stdout
+
+    # tasks start without sign-offs and print their skill, code rights, tier and findings path.
+    tickets = {**doc, "tickets": [
+        {"id": "x1", "title": "what reads the inbox", "kind": "explore", "state": "NOT STARTED"},
+        {"id": "p1", "title": "try the parser", "kind": "prototype", "state": "NOT STARTED"},
+        {"id": "g1", "title": "inbox card", "kind": "design", "state": "DONE", "feature": "search"},
+        {"id": "b1", "title": "read path", "kind": "slice", "state": "NOT STARTED", "feature": "search", "design": "g1"},
+        {"id": "b2", "title": "no feature", "kind": "slice", "state": "NOT STARTED"},
+        {"id": "l1", "title": "copy fix", "kind": "light", "state": "NOT STARTED"},
+    ]}
+    put_tickets(d, tickets)
+    out = json.loads(run(d, "x1", cmd="start").stdout)
+    assert (out["kind"], out["skill"], out["code"], out["tier"]) == (
+        "explore", "none, reads code and docs", "read-only", "claude-sonnet-5-5 high"), out
+    assert out["findings"] == os.path.join(d, "tasks", "x1.md") and out["useWorktree"] is False
+    assert json.loads(run(d, "p1", cmd="start").stdout)["useWorktree"] is True
+
+    # a task is DONE only with tasks/<id>.md under 40 lines and a note pointing to it.
+    done = ("--ticket", "x1", "--role", "task", "--type", "state", "--note", "DONE three readers found")
+    assert "tasks/x1.md" in run(d, *done).stderr
+    write(os.path.join(d, "tasks", "x1.md"), "line\n" * 40)
+    assert "40 lines" in run(d, *done).stderr
+    write(os.path.join(d, "tasks", "x1.md"), "line\n" * 39)
+    assert "note pointing" in run(d, *done).stderr
+    assert run(d, "--ticket", "x1", "--role", "task", "--type", "note", "--note", "findings tasks/x1.md").returncode == 0
+    assert run(d, *done).returncode == 0
+    assert run(d, "--ticket", "b1", "--role", "build", "--type", "state", "--note", "DONE").returncode == 0  # not a task
+
+    # features: a build in a topic room names one, and only its own feature's sign-offs start it.
+    assert "no feature" in run(d, "b2", cmd="start").stderr
+    for gate in ("requirements", "split"):
+        assert run(d, "--ticket", "all", "--gate", gate, "--answer", "ok", "--quote", "yes", cmd="signoff").returncode == 0
+        assert run(d, "--ticket", "all", "--feature", "other", "--gate", gate, "--answer", "ok", "--quote", "yes",
+                   cmd="signoff").returncode == 0
+    r = run(d, "b1", cmd="start")
+    assert r.returncode == 1 and "for feature search" in r.stderr and "requirements, split" in r.stderr, r.stderr
+    for gate in ("requirements", "split"):
+        r = run(d, "--ticket", "all", "--feature", "search", "--gate", gate, "--answer", "ok", "--quote", "signed",
+                cmd="signoff")
+        assert r.returncode == 0 and json.loads(r.stdout)["feature"] == "search", r.stdout
+    out = json.loads(run(d, "b1", cmd="start").stdout)
+    assert out["contract"] == os.path.join(d, "features", "search") and out["design"] == os.path.join(d, "tasks", "g1")
+    assert out["useWorktree"] is True and "skill" not in out
+    assert run(d, "--ticket", "b1", "--feature", "search", "--gate", "split", "--answer", "a", "--quote", "b",
+               cmd="signoff").returncode != 0  # --feature only with --ticket all
+    # every line names its feature: taken from the ticket, or given for `all`
+    assert run(d, "--ticket", "b1", "--role", "build", "--type", "note", "--note", "x").returncode == 0
+    assert evs(d)[-1]["feature"] == "search"
+    assert run(d, "--ticket", "all", "--feature", "search", "--role", "orchestrator", "--type", "note", "--note", "y").returncode == 0
+    assert evs(d)[-1]["feature"] == "search"
+    assert run(d, "--ticket", "x1", "--role", "task", "--type", "note", "--note", "z").returncode == 0
+    assert "feature" not in evs(d)[-1]
+    assert run(d, "--ticket", "all", "--feature", "bad name", "--role", "o", "--type", "note", "--note", "z").returncode != 0
+    answer = [e for e in evs(d) if e["type"] == "answer"][-1]
+    assert answer["feature"] == "search", answer
+
+    # light builds: signed on their own ticket only, on 1 to 5 numbered requirements in light/<id>.md
+    assert "requirements" in run(d, "l1", cmd="start").stderr  # the "all" lines above don't sign it
+    assert run(d, "--ticket", "l1", "--gate", "requirements", "--answer", "Sign", "--quote", "sign it",
+               cmd="signoff").returncode == 0
+    assert "light/l1.md is missing" in run(d, "l1", cmd="start").stderr
+    write(os.path.join(d, "light", "l1.md"), "".join(f"{n}. requirement {n}\n" for n in range(1, 7)))
+    assert "6 numbered requirements" in run(d, "l1", cmd="start").stderr
+    write(os.path.join(d, "light", "l1.md"), "# l1: copy fix\n\n1. Say X.\n2) Say Y.\n3. Test it.\n")
+    out = json.loads(run(d, "l1", cmd="start").stdout)
+    assert out["contract"] == os.path.join(d, "light", "l1.md") and out["kind"] == "light"
+
+    # ask: a card with a body and a link to the session behind it, from the orchestrator or a task session
+    write(os.path.join(d, "light", "card.md"), "1. Say X.\n2. Say Y.\n")
+    opts = ["--option", "Sign", "Sign the light contract", "--option", "Change it", "Say what to change"]
+    r = run(d, "--ticket", "l1", "--header", "Light", "--question", "Sign l1's light contract?", *opts,
+            "--body", os.path.join(d, "light", "card.md"), "--from-name", "copy-chat", "--from-session", sid, cmd="ask")
+    assert r.returncode == 0, r.stderr
+    q = json.loads(r.stdout)
+    assert q["ask"]["body"] == ["1. Say X.", "2. Say Y."] and q["from"] == {"name": "copy-chat", "sessionId": sid}
+    assert q["role"] == "orchestrator"
+    r = run(d, "--ticket", "g1", "--header", "Design", "--question", "Which version?", *opts, "--role", "task", cmd="ask")
+    assert r.returncode == 0 and json.loads(r.stdout)["role"] == "task" and "from" not in json.loads(r.stdout)
+    write(os.path.join(d, "big.md"), "x\n" * 21)
+    for bad in (["--role", "joey"], ["--body", os.path.join(d, "big.md")], ["--body", os.path.join(d, "nope.md")],
+                ["--from-session", sid], ["--from-name", "n", "--from-session", "local_x"]):
+        assert run(d, "--ticket", "l1", "--header", "H", "--question", "Q?", *opts, *bad, cmd="ask").returncode != 0, bad
+
+    # kinds and design links are checked
+    for t in ({"id": "k", "title": "t", "state": "NOT STARTED", "kind": "gossip"},
+              {"id": "k", "title": "t", "state": "NOT STARTED", "design": "x1"},
+              {"id": "k", "title": "t", "state": "NOT STARTED", "feature": "bad name"}):
+        put_tickets(d, {**tickets, "tickets": tickets["tickets"] + [t]})
+        assert run(d, "x1", cmd="start").returncode != 0, t
+    put_tickets(d, tickets)
+
+    # render: one tree per feature, tasks and light builds without one last; a DONE task needs no complexity line
+    assert run(d, cmd="render").returncode == 0, run(d, cmd="render").stderr
+    board = open(os.path.join(d, "progress.md")).read()
+    tree = board.split("```")[1]
+    assert tree.index("feature search") < tree.index("no feature (tasks and light builds)"), tree
+    assert "[design] inbox card" in tree and "[explore] what reads the inbox" in tree and "[light] copy fix" in tree
+    assert tree.count("staging") == 2
+
+    # signoff --change takes each signed file's path
+    for ok in ("requirements.md", "features/search/requirements.md", "light/l1.md", "openspec/changes/x"):
+        assert run(d, "--ticket", "all", "--change", ok, "--answer", "a", "--quote", "b", cmd="signoff").returncode == 0, ok
+    for bad in ("features/../requirements.md", "light/l1.txt", "split.md"):
+        assert run(d, "--ticket", "all", "--change", bad, "--answer", "a", "--quote", "b", cmd="signoff").returncode != 0, bad
+
+    # hook: a feature's requirements lock on its own sign-off, a light contract on its ticket's
+    orch, worker = os.path.join(root, "orch.jsonl"), os.path.join(root, "worker.jsonl")
+    open(orch, "w").write('{"message":{"content":[{"type":"text","text":"sf-orchestrator: topic-a"}]}}\n')
+    open(worker, "w").write('{"message":{"content":[{"type":"text","text":"a task"}]}}\n')
+    e = os.path.join(root, "e")
+    assert run(e, "--name", "e-orch", "--linear", "no", cmd="new").returncode == 0
+    freq, oreq, light = (os.path.join(e, "features", "f1", "requirements.md"),
+                         os.path.join(e, "features", "f2", "requirements.md"), os.path.join(e, "light", "l1.md"))
+    assert not hook("Edit", {"file_path": freq}, orch) and not hook("Edit", {"file_path": light}, orch)
+    assert run(e, "--ticket", "all", "--feature", "f1", "--gate", "requirements", "--answer", "a", "--quote", "b",
+               cmd="signoff").returncode == 0
+    assert hook("Edit", {"file_path": freq}, orch) and not hook("Edit", {"file_path": oreq}, orch)
+    assert not hook("Edit", {"file_path": os.path.join(e, "requirements.md")}, orch)  # the root has no sign-off
+    assert run(e, "--ticket", "all", "--change", "features/f1/requirements.md", "--answer", "a", "--quote", "b",
+               cmd="signoff").returncode == 0
+    assert not hook("Edit", {"file_path": freq}, orch)
+    assert run(e, "--ticket", "l1", "--gate", "requirements", "--answer", "a", "--quote", "b", cmd="signoff").returncode == 0
+    assert hook("Write", {"file_path": light}, orch) and not hook("Write", {"file_path": os.path.join(e, "light", "l2.md")}, orch)
+    for sub in ("refresh", "adopt"):
+        assert hook("Bash", {"command": f"python3 {e}/room {sub} --dir {e}"}, worker), sub
+    assert not hook("Bash", {"command": f"python3 {e}/room refresh --dir {e}"}, orch)
+
+
+def tree_hash(path):
+    out = []
+    for base, _, files in sorted(os.walk(path)):
+        for name in sorted(files):
+            p = os.path.join(base, name)
+            out.append((p, open(p, "rb").read(), os.stat(p).st_mtime_ns))
+    return out
+
+
+with tempfile.TemporaryDirectory() as root:
+    # adopt by reference: the other run's tickets show on this board, read-only, and that run is never written.
+    d, src = os.path.join(root, "topic"), os.path.join(root, "older-run")
+    assert run(d, "--name", "orch", "--linear", "no", cmd="new").returncode == 0
+    os.makedirs(src)
+    theirs = {"slug": "older-run", "orchestrator": "older-orch", "orchestratorSessionId": "local_0a1b2c3d-0a1b-0a1b-0a1b-0a1b2c3d4e5f",
+              "tickets": [{"id": "s1", "title": "schema", "state": "MERGED", "pr": 101, "branch": "j/s1"},
+                          {"id": "s2", "title": "write path", "state": "PR", "stacksOn": "s1", "pr": 102,
+                           "prUrl": "https://github.com/o/r/pull/102", "session": "older-s2"}]}
+    put_tickets(src, theirs)
+    write(os.path.join(src, "events.jsonl"), "")
+    before = tree_hash(src)
+    r = run(d, "--feature", "export", "--source", src, cmd="adopt")
+    assert r.returncode == 0 and "2 tickets" in r.stdout and "no summary.md yet" in r.stdout, r.stdout + r.stderr
+    doc = json.load(open(os.path.join(d, "tickets.json")))
+    assert doc["adopted"] == {"export": src}
+    copies = {t["id"]: t for t in doc["tickets"]}
+    assert set(copies) == {"export.s1", "export.s2"} and copies["export.s2"]["stacksOn"] == "export.s1"
+    assert copies["export.s2"]["feature"] == "export" and copies["export.s2"]["source"] == src
+    source = open(os.path.join(d, "features", "export", "source.md")).read()
+    assert src in source and "older-orch (local_0a1b2c3d" in source and "https://github.com/o/r/pull/102" in source
+    assert "| s1 | MERGED | - | - | #101 |" in source
+    assert "adopted by reference" in run(d, "export.s2", cmd="start").stderr
+    assert run(d, cmd="render").returncode == 0  # a MERGED copy needs no complexity line here
+    assert "read-only, from older-run" in open(os.path.join(d, "progress.md")).read()
+    for args in (["--feature", "export", "--source", src], ["--feature", "x", "--source", d],
+                 ["--feature", "x", "--source", os.path.join(root, "missing")], ["--feature", "bad name", "--source", src]):
+        assert run(d, *args, cmd="adopt").returncode != 0, args
+
+    # refresh follows the other run, keeps this room's own Linear link, and says when it has finished
+    doc["tickets"][1]["linearIssue"] = "ENG-9"
+    put_tickets(d, doc)
+    theirs["tickets"][1].update(state="MERGED", ci="green")
+    put_tickets(src, theirs)
+    before = tree_hash(src)
+    write(os.path.join(d, "features", "export", "summary.md"), "x\n" * 80)
+    r = run(d, cmd="refresh")
+    assert r.returncode == 0 and "cut it under 80" in r.stdout and "rewrite summary.md once more" in r.stdout, r.stdout
+    copies = {t["id"]: t for t in json.load(open(os.path.join(d, "tickets.json")))["tickets"]}
+    assert copies["export.s2"]["state"] == "MERGED" and copies["export.s2"]["linearIssue"] == "ENG-9"
+    write(os.path.join(d, "features", "export", "summary.md"), "x\n" * 79)
+    assert "summary.md ok" in run(d, cmd="refresh").stdout
+    # a broken source keeps the last copy
+    write(os.path.join(src, "tickets.json"), "{ half")
+    before = tree_hash(src)
+    assert "kept the last copy" in run(d, cmd="refresh").stdout
+    assert len(json.load(open(os.path.join(d, "tickets.json")))["tickets"]) == 2
+    assert tree_hash(src) == before, "refresh wrote to the adopted run"
+
+
+# orchestrate.md's task table and the CLI's TASKS name the same kinds and start tiers.
+import importlib.machinery
+import importlib.util
+loader = importlib.machinery.SourceFileLoader("room_cli", ROOM)
+room_cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("room_cli", loader))
+loader.exec_module(room_cli)
+doc_rows = {}
+for line in open(os.path.join(HERE, "..", "commands", "orchestrate.md")):
+    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+    if len(cells) == 4 and cells[0] in room_cli.TASKS:
+        doc_rows[cells[0]] = cells[3]
+assert set(doc_rows) == set(room_cli.TASKS), doc_rows
+for kind, tier_text in doc_rows.items():
+    model, effort = room_cli.TASKS[kind][2].split()
+    want = {"claude-sonnet-5-5": "Sonnet 5.5", "claude-opus-5-5": "Opus 5.5"}[model]
+    assert tier_text == f"{want} {effort}", (kind, tier_text)
+
 print("room_test: ok")

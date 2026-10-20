@@ -12,6 +12,9 @@
   render   write progress.md's board from tickets.json and the open questions in events.jsonl
   podium   read Podium's fleet state and log a `blocker` for each worker that waits on Joey, went stale,
            has an unretried failed agent or has filled 80% of its context, once per new condition
+  new      make a topic room: no contract, this session as orchestrator, Joey's Linear mirror answer
+  adopt    add another run as a feature by reference: features/<slug>/source.md, then refresh (orchestrator)
+  refresh  copy each adopted run's tickets onto this room's board, reading that run and never writing to it
 
 Every session writes events through this, never with an editor or a shell redirect, so each line
 parses and carries a sequence id the orchestrator's ledger uses as its cursor. Only signoffs.jsonl
@@ -22,6 +25,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import sys
 import urllib.error
 import urllib.parse
@@ -37,11 +41,36 @@ GATES = ("framed", "requirements", "grilled", "impact", "steward", "split", "spe
          "ci", "complexity")
 FIELDS = ("id", "title", "kind", "queue", "state", "after", "stacksOn", "worktree", "branch", "pr", "sha",
           "ci", "session", "sessionId", "needs", "gates", "note", "model", "effort", "complexity", "blast", "budget",
-          "linear", "prUrl")
+          "linear", "prUrl", "feature", "linearIssue", "design", "source")
+# Topic-room tasks: kind -> (default skill, code rights, start tier). They start without sign-offs. The same
+# table is in commands/orchestrate.md ("Tasks"); room_test.py checks the two agree.
+TASKS = {
+    "explore": ("none, reads code and docs", "read-only", "claude-sonnet-5-5 high"),
+    "investigate": ("query-data, logs (prod read-only)", "read-only", "claude-opus-5-5 high"),
+    "plan": ("search the past, then gather-requirements, grilling, split", "writes the plan only",
+             "claude-opus-5-5 high"),
+    "design": ("Claude Design: several versions (default 3) or one if asked; Joey picks on a room ask card",
+               "read-only", "claude-opus-5-5 high"),
+    "prototype": ("none", "own worktree, never pushes or opens a PR", "claude-sonnet-5-5 high"),
+    "size": ("sf:size-change-impact", "read-only", "claude-opus-5-5 high"),
+    "evaluate": ("asks first what is evaluated and against what; offers the 1-3 best installed skills plus a "
+                 "plain sheet (sf:make-sheet)", "read-only; model calls on prod data only under that provider's "
+                 "prod key", "claude-opus-5-5 high"),
+    "measure": ("sf:measure-change-impact run", "read-only", "claude-opus-5-5 high"),
+}
+# slice: a build under a full contract. light: a one-PR build under its own light contract (light/<id>.md).
+KINDS = ("slice", "light", "probe", *TASKS)
+FINDINGS_LINES = 40  # a task's findings file must be under this many lines
+LIGHT_MAX = 5  # a light contract holds at most this many numbered requirements
+SUMMARY_LINES = 80  # an adopted feature's summary.md must be under this many lines
+FINISHED = ("DONE", "MERGED")
 NAME = re.compile(r"^[A-Za-z0-9][\w.-]{0,63}$")
 SESSION_ID = re.compile(r"^local_[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 SHA = re.compile(r"^[0-9a-f]{7,40}$")
 TIER = re.compile(r"^claude-[a-z0-9.-]+ (low|medium|high|xhigh|max)$")
+# Signed files an answer may let change (room-writers.py locks each once its gate is signed).
+CHANGE = re.compile(r"^(requirements\.md|features/[A-Za-z0-9][\w.-]*/requirements\.md|light/[A-Za-z0-9][\w.-]*\.md"
+                    r"|openspec/changes/[\w.-]+)$")
 MAX_NOTE = 500
 
 
@@ -79,9 +108,42 @@ def read_jsonl(path):
         return []
 
 
-def event(d, ticket, role, type_, note, sha=None, **extra):
+def raw_tickets(d):
+    """tickets.json's ticket list without checks, or [] when there is none: for lookups that must not fail."""
+    try:
+        with open(os.path.join(d, "tickets.json"), encoding="utf-8") as f:
+            tickets = json.load(f).get("tickets")
+        return [t for t in tickets if isinstance(t, dict)] if isinstance(tickets, list) else []
+    except (OSError, ValueError, AttributeError):
+        return []
+
+
+def ticket_of(d, ticket):
+    return next((t for t in raw_tickets(d) if t.get("id") == ticket), {})
+
+
+def event(d, ticket, role, type_, note, sha=None, feature=None, **extra):
+    # Every line names its feature when it has one: given, else the ticket's own.
+    feature = feature or ticket_of(d, ticket).get("feature")
     return append(os.path.join(d, "events.jsonl"),
-                  {"ticket": ticket, "role": role, "type": type_, "sha": sha, "note": note.strip(), **extra})
+                  {"ticket": ticket, **({"feature": feature} if feature else {}), "role": role, "type": type_,
+                   "sha": sha, "note": note.strip(), **extra})
+
+
+def findings_error(d, ticket):
+    """Why a task can't be DONE yet, or None: it needs tasks/<id>.md under 40 lines and a note naming it."""
+    rel = f"tasks/{ticket}.md"
+    try:
+        with open(os.path.join(d, rel), encoding="utf-8") as f:
+            lines = len(f.read().splitlines())
+    except OSError:
+        return f"a task is DONE only once {rel} holds its findings"
+    if lines >= FINDINGS_LINES:
+        return f"{rel} is {lines} lines; keep findings under {FINDINGS_LINES}"
+    if not any(e.get("ticket") == ticket and e.get("type") == "note" and rel in e.get("note", "")
+               for e in read_jsonl(os.path.join(d, "events.jsonl"))):
+        return f"log a note pointing to {rel} first (--type note --note \"findings {rel}\")"
+    return None
 
 
 def fail(cmd, error, code=2):
@@ -109,9 +171,14 @@ def log(a):
     note = a.note.strip()
     if not error and a.type == "state" and not any(note == s or note.startswith(s + " ") for s in STATES):
         error = f"a state note must start with one of: {', '.join(STATES)}"
+    if not error and a.feature is not None and not NAME.match(a.feature):
+        error = f"--feature {a.feature!r} must be letters, digits, '.', '_' or '-'"
+    if (not error and a.type == "state" and (note == "DONE" or note.startswith("DONE "))
+            and ticket_of(a.dir, a.ticket).get("kind") in TASKS):
+        error = findings_error(a.dir, a.ticket)
     if error:
         return fail("log", error)
-    print(event(a.dir, a.ticket, a.role, a.type, note, a.sha))
+    print(event(a.dir, a.ticket, a.role, a.type, note, a.sha, a.feature))
     return 0
 
 
@@ -145,12 +212,29 @@ def ask(a):
         error = "give 2 to 4 --option LABEL DESCRIPTION pairs, the recommended one first"
     for label, desc in a.option or []:
         error = error or one_line(label, "an option label", 60) or one_line(desc, "an option description", 200)
+    if not error and (not NAME.match(a.role) or a.role in ("joey", "joined")):
+        error = f"--role {a.role!r} must be a session role such as orchestrator or task, not joey or joined"
+    body = []
+    if not error and a.body:
+        # A card's longer text, such as a light contract's numbered requirements, shown under the question.
+        try:
+            with open(a.body, encoding="utf-8") as f:
+                body = [l.rstrip() for l in f.read().strip().splitlines()]
+        except OSError as e:
+            error = f"cannot read --body: {e}"
+        if not error and (len(body) > 20 or sum(len(l) for l in body) > 2000):
+            error = "--body holds at most 20 lines and 2000 characters; link a file for more"
+    if not error and a.from_session and not SESSION_ID.match(a.from_session):
+        error = f"--from-session {a.from_session!r} must look like local_<uuid>"
+    if not error and (a.from_session or a.from_name) and not (a.from_name and NAME.match(a.from_name)):
+        error = "--from-name, letters, digits, '.', '_' or '-', names the session behind the card"
     if error:
         return fail("ask", error)
     shape = {"header": a.header.strip(), "question": a.question.strip(),
              "options": [{"label": l.strip(), "description": d.strip()} for l, d in a.option],
-             "multiSelect": a.multi}
-    print(event(a.dir, a.ticket, "orchestrator", "question", a.question, ask=shape))
+             "multiSelect": a.multi, **({"body": body} if body else {})}
+    who = {"from": {"name": a.from_name, **({"sessionId": a.from_session} if a.from_session else {})}} if a.from_name else {}
+    print(event(a.dir, a.ticket, a.role, "question", a.question, ask=shape, **who))
     return 0
 
 
@@ -172,20 +256,24 @@ def signoff(a):
         error = "give --gate alone, or --question and/or --change, or --message, or --tier"
     if not error and a.question is not None and not a.question.isdigit():
         error = "--question is the question event's id"
-    if not error and a.change is not None and not (
-            a.change == "requirements.md" or re.match(r"^openspec/changes/[\w.-]+$", a.change)):
-        error = "--change is requirements.md or openspec/changes/<name>"
+    if not error and a.change is not None and not CHANGE.match(a.change):
+        error = ("--change is requirements.md, features/<slug>/requirements.md, light/<ticket>.md or "
+                 "openspec/changes/<name>")
+    if not error and a.feature is not None and (a.ticket != "all" or not NAME.match(a.feature)):
+        error = "--feature goes with --ticket all and names a feature (letters, digits, '.', '_' or '-')"
     if error:
         return fail("signoff", error)
-    what = {k: v for k, v in (("gate", a.gate), ("question", a.question and int(a.question)), ("change", a.change),
-                              ("message", a.message), ("tier", a.tier)) if v}
+    # A run-wide gate signed for --ticket all covers only the feature named; a ticket's line takes its feature.
+    feature = a.feature or ticket_of(a.dir, a.ticket).get("feature")
+    what = {k: v for k, v in (("feature", feature), ("gate", a.gate), ("question", a.question and int(a.question)),
+                              ("change", a.change), ("message", a.message), ("tier", a.tier)) if v}
     line = append(os.path.join(a.dir, "signoffs.jsonl"),
                   {"ticket": a.ticket, **what, "answer": a.answer.strip(), "quote": a.quote.strip()})
     # The answer event wakes the orchestrator's monitor and closes the question on the board. Its role is
     # joey, never orchestrator, so an orchestrator skipping its own events still wakes on it.
     label = ("message" if a.message else f"tier {a.tier}" if a.tier else f"re {a.question}" if a.question
              else f"signoff {a.gate or a.change}")
-    event(a.dir, a.ticket, "joey", "answer", f"{label}: {a.answer.strip()}"[:MAX_NOTE])
+    event(a.dir, a.ticket, "joey", "answer", f"{label}: {a.answer.strip()}"[:MAX_NOTE], feature=feature)
     print(line)
     return 0
 
@@ -213,30 +301,59 @@ def load_tickets(d):
             return None, f"{t['id']}: after/stacksOn names an unknown ticket"
         if set(t.get("gates") or {}) - set(GATES):
             return None, f"{t['id']}: unknown gates {sorted(set(t['gates']) - set(GATES))}"
+        if t.get("kind", "slice") not in KINDS:
+            return None, f"{t['id']}: kind must be one of {', '.join(KINDS)}"
+        if t.get("feature") is not None and not NAME.match(str(t["feature"])):
+            return None, f"{t['id']}: feature must be letters, digits, '.', '_' or '-'"
+        if t.get("design") is not None and not any(
+                x.get("id") == t["design"] and x.get("kind") == "design" for x in tickets):
+            return None, f"{t['id']}: design names no design task"
     if len(set(ids)) != len(ids):
         return None, "ticket ids must be unique"
     return doc, None
 
 
-def signed(signoffs, gate, ticket):
-    # Run-wide gates (requirements, split, spec) may be signed for "all"; complexity is per ticket.
-    names = (ticket,) if gate == "complexity" else (ticket, "all")
-    return any(s.get("gate") == gate and s.get("ticket") in names for s in signoffs)
+def signed(signoffs, gate, t):
+    """A feature's gates (requirements, split, spec) may be signed for "all" with that feature, and a room with no
+    features signs them for "all" alone, so its root contract is its one feature. Complexity, and a light build's
+    own contract, are signed per ticket."""
+    if gate == "complexity" or t.get("kind") == "light":
+        return any(s.get("gate") == gate and s.get("ticket") == t["id"] for s in signoffs)
+    return any(s.get("gate") == gate and (s.get("ticket") == t["id"] or s.get("ticket") == "all"
+                                          and s.get("feature") == t.get("feature")) for s in signoffs)
 
 
 def needs_complexity(t):
     # The factory merges a FACTORY ticket's PR itself once its gate passes (Joey's choice), so there is no
-    # complexity review to sign; a ticket with a factory `linear` id is exempt.
-    return t["state"] in ("COMPLEXITY REVIEW", "DONE", "MERGED") and not t.get("linear")
+    # complexity review to sign; a ticket with a factory `linear` id is exempt. So are tasks, which merge nothing,
+    # and a ticket adopted from another run, whose own run holds its gates.
+    return (t["state"] in ("COMPLEXITY REVIEW", "DONE", "MERGED") and not t.get("linear")
+            and t.get("kind") not in TASKS and not t.get("source"))
 
 
 def missing_gates(t, signoffs):
-    need = ["requirements", "split"]
+    if t.get("kind") in TASKS:
+        return []  # tasks start without asking Joey
+    need = ["requirements"] if t.get("kind") == "light" else ["requirements", "split"]
     if (t.get("gates") or {}).get("spec", "none") != "none":
         need.append("spec")
     if needs_complexity(t):
         need.append("complexity")
-    return [g for g in need if not signed(signoffs, g, t["id"])]
+    return [g for g in need if not signed(signoffs, g, t)]
+
+
+def light_error(d, t):
+    """Why a light build can't start on its contract, or None. light/<id>.md holds 1 to 5 numbered requirements."""
+    rel = f"light/{t['id']}.md"
+    try:
+        with open(os.path.join(d, rel), encoding="utf-8") as f:
+            n = sum(1 for l in f if re.match(r"^\s*\d+[.)]\s", l))
+    except OSError:
+        return f"{rel} is missing; write the light contract Joey signed there"
+    if not 1 <= n <= LIGHT_MAX:
+        return (f"{rel} has {n} numbered requirements; a light build has 1 to {LIGHT_MAX}. Anything bigger goes "
+                "through a plan task and a full contract")
+    return None
 
 
 def tier_override(signoffs, ticket):
@@ -261,32 +378,56 @@ def start(a):
     t = next((t for t in doc["tickets"] if t["id"] == a.ticket), None)
     if t is None:
         return fail("start", f"no ticket {a.ticket!r} in tickets.json")
+    if t.get("source"):
+        return fail("start", f"{a.ticket} is adopted by reference from {t['source']}; that run starts it, never "
+                             "this room", 1)
+    kind = t.get("kind", "slice")
+    if kind == "slice" and doc.get("topic") and not t.get("feature"):
+        return fail("start", f"{a.ticket} is a build with no feature; in a topic room a build names the feature "
+                             "whose contract it builds (features/<slug>/)", 1)
     signoffs = read_jsonl(os.path.join(a.dir, "signoffs.jsonl"))
     missing = missing_gates(t, signoffs)
     if missing:
-        return fail("start", f"{a.ticket} has no sign-off in signoffs.jsonl for: {', '.join(missing)}. "
+        whose = f" for feature {t['feature']}" if t.get("feature") and kind != "light" else ""
+        return fail("start", f"{a.ticket} has no sign-off in signoffs.jsonl{whose} for: {', '.join(missing)}. "
                              "Ask Joey, record his answer with `room signoff`, then retry.", 1)
+    if kind == "light" and light_error(a.dir, t):
+        return fail("start", light_error(a.dir, t), 1)
     by_id = {x["id"]: x for x in doc["tickets"]}
     base = by_id[t["stacksOn"]].get("branch") if t.get("stacksOn") else "staging"
     slug = doc.get("slug") or os.path.basename(os.path.abspath(a.dir))
-    print(json.dumps({"start": f"{slug}-{t['id']}", "ticket": t["id"], "title": t["title"],
-                      "worktree": t.get("worktree"), "branch": t.get("branch"), "base": base,
-                      "stateDir": os.path.abspath(a.dir), "room": os.path.join(os.path.abspath(a.dir), "room"),
-                      "needs": t.get("needs") or [], "override": tier_override(signoffs, t["id"])}, indent=2))
+    d = os.path.abspath(a.dir)
+    out = {"start": f"{slug}-{t['id']}", "ticket": t["id"], "title": t["title"], "kind": kind,
+           "feature": t.get("feature"), "worktree": t.get("worktree"), "branch": t.get("branch"), "base": base,
+           "useWorktree": kind not in TASKS or kind == "prototype", "stateDir": d, "room": os.path.join(d, "room"),
+           "needs": t.get("needs") or [], "override": tier_override(signoffs, t["id"])}
+    if kind in TASKS:
+        skill, code, tier_ = TASKS[kind]
+        out.update(skill=skill, code=code, tier=tier_, findings=os.path.join(d, "tasks", f"{t['id']}.md"))
+    if t.get("feature"):
+        out["contract"] = os.path.join(d, "features", t["feature"])
+    if kind == "light":
+        out["contract"] = os.path.join(d, "light", f"{t['id']}.md")
+    if t.get("design"):
+        out["design"] = os.path.join(d, "tasks", t["design"])  # the chosen version's screenshots
+    print(json.dumps(out, indent=2))
     return 0
 
 
 def tree_lines(tickets):
+    ids = {t["id"] for t in tickets}
     by_parent = {}
     for t in tickets:
-        by_parent.setdefault(t.get("stacksOn"), []).append(t)
+        # A ticket stacked on one outside this group (another feature's) is drawn at this group's root.
+        by_parent.setdefault(t.get("stacksOn") if t.get("stacksOn") in ids else None, []).append(t)
     rows = []
 
     def walk(parent, prefix):
         kids = by_parent.get(parent, [])
         for i, t in enumerate(kids):
             last = i == len(kids) - 1
-            label = (f"#{t['pr']}  " if t.get("pr") else "") + t["title"]
+            kind = t.get("kind", "slice")
+            label = (f"#{t['pr']}  " if t.get("pr") else "") + ("" if kind in ("slice", "probe") else f"[{kind}] ") + t["title"]
             rows.append((prefix + ("└─ " if last else "├─ "), label, t))
             walk(t["id"], prefix + ("   " if last else "│  "))
 
@@ -302,8 +443,35 @@ def tree_lines(tickets):
         after = [x for x in t.get("after") or [] if x != t.get("stacksOn")]
         tail = [f"after: {', '.join(after)}"] if after and t["state"] != "NOT STARTED" else []
         tail += [t["sha"]] if t.get("sha") else []
+        tail += [f"read-only, from {os.path.basename(t['source'].rstrip('/'))}"] if t.get("source") else []
         lines.append((prefix + label).ljust(width) + "".join([status] + [f". {x}" for x in tail]))
     return lines
+
+
+def feature_groups(tickets):
+    """[(feature or None, tickets)], features in first-seen order and tickets with none last."""
+    names = list(dict.fromkeys(t.get("feature") for t in tickets))
+    order = [f for f in names if f] + ([None] if None in names else [])
+    return [(f, [t for t in tickets if t.get("feature") == f]) for f in order]
+
+
+def board_lines(tickets):
+    groups = feature_groups(tickets)
+    if len(groups) <= 1 and not any(f for f, _ in groups):
+        return tree_lines(tickets)  # a room with no features: today's one tree
+    out = []
+    for f, group in groups:
+        out += ([""] if out else []) + [f"feature {f}" if f else "no feature (tasks and light builds)"] + tree_lines(group)
+    return out
+
+
+def linear_line(doc):
+    m = doc.get("linear")
+    if not isinstance(m, dict):
+        return []
+    if not m.get("mirror"):
+        return [f"Linear: not mirrored ({m.get('why') or 'Joey said no'})", ""]
+    return [f"Linear: mirrored to {m.get('project') or 'a project not made yet'} in {m.get('team') or 'no team set'}", ""]
 
 
 def open_questions(events):
@@ -320,7 +488,7 @@ def render(a):
     signoffs = read_jsonl(os.path.join(a.dir, "signoffs.jsonl"))
     unsigned = [t["id"] for t in doc["tickets"]
                 if t["state"] != "COMPLEXITY REVIEW" and needs_complexity(t)
-                and not signed(signoffs, "complexity", t["id"])]
+                and not signed(signoffs, "complexity", t)]
     if unsigned:
         return fail("render", f"DONE needs Joey's complexity sign-off first: {', '.join(unsigned)}", 1)
     slug = doc.get("slug") or os.path.basename(os.path.abspath(a.dir))
@@ -328,13 +496,13 @@ def render(a):
     probes = [f"- {t['id']}: {t['title']}" for t in doc["tickets"] if t["state"] == "PROBE"] or ["- none"]
     text = "\n".join([
         f"# {slug}: progress", "",
-        *(doc.get("frame") or []), *([""] if doc.get("frame") else []),
+        *(doc.get("frame") or []), *([""] if doc.get("frame") else []), *linear_line(doc),
         f"## State board (kept current by \"{doc.get('orchestrator', 'orchestrator')}\"; last updated {stamp})", "",
         "Only the orchestrator edits this file, by rendering it from tickets.json with `room render`. Workers "
         "report with `room log` to `events.jsonl` in this dir; the orchestrator wakes on that file.", "",
         "Dependency tree (an arrow means \"stacks on, merges after\"; \"after:\" names a slice it waits on "
         "without stacking):", "",
-        "```", *tree_lines(doc["tickets"]), "```", "",
+        "```", *board_lines(doc["tickets"]), "```", "",
         "Probes and leftovers (never merge):", *probes, "",
         "Open questions for Joey:", *open_questions(read_jsonl(os.path.join(a.dir, "events.jsonl"))), "",
     ])
@@ -445,6 +613,133 @@ def podium(a):
     return 0
 
 
+def write_json(path, doc):
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(path + ".tmp", path)
+
+
+def new(a):
+    d = os.path.abspath(os.path.expanduser(a.dir))
+    topic = os.path.basename(d)
+    error = None if NAME.match(topic) else f"the topic {topic!r} must be letters, digits, '.', '_' or '-'"
+    if not error and any(os.path.exists(os.path.join(d, f)) for f in ("tickets.json", "events.jsonl")):
+        error = f"{d} is already a room; open it with /sf:orchestrate {topic}"
+    if not error and not NAME.match(a.name):
+        error = f"--name {a.name!r} must be letters, digits, '.', '_' or '-'"
+    if not error and a.session_id is not None and not SESSION_ID.match(a.session_id):
+        error = f"--session-id {a.session_id!r} must look like local_<uuid>"
+    if not error and (a.linear == "mirror") != bool(a.team):
+        error = "--team names the Linear team with --linear mirror, and only then"
+    if error:
+        return fail("new", error)
+    for sub in ("", "tasks", "features", "light"):
+        os.makedirs(os.path.join(d, sub), exist_ok=True)
+    linear = ({"mirror": True, "team": a.team, "project": None, "milestones": {}, "updates": {}}
+              if a.linear == "mirror" else
+              {"mirror": False, "why": "no Linear connector" if a.linear == "no-connector" else "Joey said no"})
+    write_json(os.path.join(d, "tickets.json"), {
+        "slug": topic, "topic": True, "orchestrator": a.name,
+        **({"orchestratorSessionId": a.session_id} if a.session_id else {}),
+        "frame": [f"Topic room: {topic}. No contract: tasks start freely, each feature signs its own."],
+        "linear": linear, "adopted": {}, "tickets": []})
+    shutil.copy2(os.path.abspath(__file__), os.path.join(d, "room"))
+    told = "mirrored to Linear" if linear["mirror"] else f"not mirrored ({linear['why']})"
+    print(event(d, "all", "orchestrator", "note", f"room {topic} opened by {a.name}; {told}"))
+    return render(argparse.Namespace(dir=d))
+
+
+def mirror_ticket(feature, src, t, before):
+    """This room's read-only copy of another run's ticket: ids prefixed with the feature, fields it owns kept."""
+    ref = lambda x: f"{feature}.{x}"
+    keep = ("title", "kind", "queue", "state", "worktree", "branch", "pr", "sha", "ci", "session", "sessionId",
+            "needs", "gates", "note", "model", "effort", "complexity", "blast", "budget", "linear", "prUrl")
+    out = {k: t[k] for k in keep if k in t}
+    out.update(id=ref(t["id"]), feature=feature, source=src,
+               after=[ref(x) for x in t.get("after") or []], stacksOn=ref(t["stacksOn"]) if t.get("stacksOn") else None)
+    if before.get("linearIssue"):
+        out["linearIssue"] = before["linearIssue"]  # the mirror's own Linear link survives every refresh
+    return out
+
+
+def source_md(feature, src, doc, stamp):
+    rows = [f"| {t['id']} | {t['state']} | {t.get('session') or '-'} | {t.get('sessionId') or '-'} | "
+            f"{t.get('prUrl') or (('#' + str(t['pr'])) if t.get('pr') else '-')} |" for t in doc["tickets"]]
+    return "\n".join([
+        f"# {feature}: source (adopted by reference, read-only)", "",
+        f"State dir: {src}",
+        f"Orchestrator: {doc.get('orchestrator') or 'not named'} ({doc.get('orchestratorSessionId') or 'no session id'})",
+        f"Written by `room refresh` {stamp}. This room reads that run's tickets.json and never writes to it.", "",
+        "| Ticket | State | Session | Session id | PR |", "|---|---|---|---|---|", *rows, ""])
+
+
+def refresh_one(d, doc, feature, src):
+    """Re-copy one adopted run's tickets into doc. Returns (line to print, copied?)."""
+    theirs, error = load_tickets(src)
+    if error:
+        return f"{feature}: kept the last copy, {src} does not load: {error}", False
+    before = {t["id"]: t for t in doc["tickets"] if t.get("source") == src}
+    mine = [t for t in doc["tickets"] if t.get("source") != src]
+    copies = [mirror_ticket(feature, src, t, before.get(f"{feature}.{t['id']}", {})) for t in theirs["tickets"]]
+    bad = [c["id"] for c in copies if not NAME.match(c["id"]) or c["id"] in {t["id"] for t in mine}]
+    if bad:
+        return f"{feature}: not copied, ids too long or taken here: {', '.join(bad)}", False
+    doc["tickets"] = mine + copies
+    fdir = os.path.join(d, "features", feature)
+    os.makedirs(fdir, exist_ok=True)
+    with open(os.path.join(fdir, "source.md"), "w", encoding="utf-8") as f:
+        f.write(source_md(feature, src, theirs, now()))
+    finished = bool(theirs["tickets"]) and all(t["state"] in FINISHED for t in theirs["tickets"])
+    try:
+        with open(os.path.join(fdir, "summary.md"), encoding="utf-8") as f:
+            n = len(f.read().splitlines())
+        say = f"summary.md is {n} lines, cut it under {SUMMARY_LINES}" if n >= SUMMARY_LINES else "summary.md ok"
+    except OSError:
+        say = "no summary.md yet: have a Sonnet 5.5 sub-agent write it"
+    done = "; that run is finished, rewrite summary.md once more" if finished else ""
+    return f"{feature}: {len(copies)} tickets from {src}; {say}{done}", True
+
+
+def refresh(a):
+    doc, error = load_tickets(a.dir)
+    if error:
+        return fail("refresh", error)
+    adopted = doc.get("adopted") or {}
+    if not adopted:
+        print("room refresh: nothing adopted")
+        return 0
+    lines = [refresh_one(a.dir, doc, f, src)[0] for f, src in adopted.items()]
+    write_json(os.path.join(a.dir, "tickets.json"), doc)
+    print("\n".join(lines))
+    return 0
+
+
+def adopt(a):
+    doc, error = load_tickets(a.dir)
+    src = os.path.abspath(os.path.expanduser(a.source))
+    here = os.path.abspath(a.dir)
+    if not error and not NAME.match(a.feature):
+        error = f"--feature {a.feature!r} must be letters, digits, '.', '_' or '-'"
+    if not error and a.feature in (doc.get("adopted") or {}):
+        error = f"{a.feature} is already adopted from {doc['adopted'][a.feature]}"
+    if not error and (src == here or src.startswith(here + os.sep) or here.startswith(src + os.sep)):
+        error = "--source is another run's state dir, outside this room"
+    if not error and not os.path.isfile(os.path.join(src, "tickets.json")):
+        error = f"--source {src} has no tickets.json"
+    if not error:
+        error = load_tickets(src)[1]
+    if error:
+        return fail("adopt", error)
+    doc.setdefault("adopted", {})[a.feature] = src
+    line, ok = refresh_one(a.dir, doc, a.feature, src)
+    if not ok:
+        return fail("adopt", line)
+    write_json(os.path.join(a.dir, "tickets.json"), doc)
+    print(line)
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="room")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -461,6 +756,7 @@ def main(argv=None):
     lp.add_argument("--type", required=True, choices=[t for t in TYPES if t != "join"])
     lp.add_argument("--sha", help="head SHA, when there is one")
     lp.add_argument("--note", required=True, help="one line; a state note starts with the state")
+    lp.add_argument("--feature", help="the feature, for a line on `all`; a ticket's own feature is added for you")
 
     jp = cmd("join", "a session started by hand adds itself to the run")
     jp.add_argument("--name", required=True, help="the session's name, like a ticket's `session`")
@@ -472,6 +768,10 @@ def main(argv=None):
     ap.add_argument("--option", nargs=2, action="append", metavar=("LABEL", "DESCRIPTION"),
                     help="2 to 4, the recommended one first")
     ap.add_argument("--multi", action="store_true", help="allow more than one option")
+    ap.add_argument("--role", default="orchestrator", help="who asks: orchestrator, or a task session's role")
+    ap.add_argument("--body", help="a file of at most 20 lines shown under the question, e.g. a light contract")
+    ap.add_argument("--from-name", help="the session behind the card, linked from it")
+    ap.add_argument("--from-session", help="that session's local_<uuid> id")
 
     sp = cmd("signoff", "record Joey's answer, sign-off or message in <dir>/signoffs.jsonl")
     sp.add_argument("--gate", choices=GATES)
@@ -483,6 +783,7 @@ def main(argv=None):
                                    "until he clears it with --tier clear")
     sp.add_argument("--answer", help="the option Joey picked, or a one-line summary; optional with --message or --tier")
     sp.add_argument("--quote", required=True, help="Joey's words, verbatim")
+    sp.add_argument("--feature", help="with --ticket all: the feature whose requirements, split or spec this signs")
 
     stp = cmd("start", "check a ticket's human gates, then print what to start", ticket=False)
     stp.add_argument("ticket")
@@ -492,9 +793,21 @@ def main(argv=None):
     cmd("podium", "log a blocker for each worker Podium shows waiting, stale, failing or near its context limit",
         ticket=False)
 
+    np = cmd("new", "make a topic room at --dir (~/FyxerGh/build-room/<topic>) with this session as orchestrator",
+             ticket=False)
+    np.add_argument("--name", required=True, help="this session's name; it becomes the orchestrator")
+    np.add_argument("--session-id", help="this session's local_<uuid> id")
+    np.add_argument("--linear", required=True, choices=("mirror", "no", "no-connector"),
+                    help="Joey's answer to \"Mirror this room to Linear?\", or no-connector")
+    np.add_argument("--team", help="the Linear team for the room's project, with --linear mirror")
+    adp = cmd("adopt", "add another run as a feature of this room, by reference and read-only", ticket=False)
+    adp.add_argument("--feature", required=True, help="the feature slug it becomes, features/<slug>/")
+    adp.add_argument("--source", required=True, help="that run's state dir")
+    cmd("refresh", "re-copy each adopted run's tickets onto this room's board; writes only this room", ticket=False)
+
     a = p.parse_args(argv)
     return {"log": log, "ask": ask, "signoff": signoff, "start": start, "render": render, "tier": tier,
-            "podium": podium, "join": join}[a.cmd](a)
+            "podium": podium, "join": join, "new": new, "adopt": adopt, "refresh": refresh}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 {
   "name": "sf",
-  "version": "0.7.30",
+  "version": "0.7.31",
   "description": "Software factory \u2014 run a feature idea\u2192open PR through a left-shifted gated pipeline, start from an investigation (sf:investigate) when the input is a reported bug, or enter at any phase (plan/build/review/ci-green) and resume from saved state in .scratch/<slug>/.",
   "author": {
     "name": "Joey Dwonczyk"
@@ -22,6 +22,12 @@
       "type": "string",
       "title": "Linear project",
       "description": "Name of the Linear project sf searches when it links a PR to an issue, and checks when it updates the issue after merge, such as your pod's project. Leave blank to search all issues assigned to you and skip the project check. Prompted once at install; change later with /plugin configure sf.",
+      "default": ""
+    },
+    "linearTeam": {
+      "type": "string",
+      "title": "Linear team for topic rooms",
+      "description": "Name or key of the Linear team that a topic room's mirror project goes in (/sf:room new). Leave blank to be asked when a room is mirrored. Prompted once at install; change later with /plugin configure sf.",
       "default": ""
     }
   }

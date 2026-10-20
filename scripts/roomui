@@ -5,6 +5,8 @@
   roomui stop     stop both servers and the sampler, then offer to close each room (y/N, default no)
   roomui rooms    list the rooms (runs) under the state dir, with open questions and last activity
   roomui close <room>... [--force]   archive a room into <state dir>/.closed/<room>-<time>/
+  roomui closeout <room> [--base B]  print, as JSON, the sessions to archive and the worktrees to prune
+                  before closing it (changes nothing; the /sf:room command archives and prunes)
   roomui status   running or not, pid, RSS, CPU, uptime, URL, and the last 24 hours of samples
 
 Environment: ROOMUI_AGENT_TEAM_DIR (default ~/FyxerGh/agent-team), ROOMUI_PODIUM_DIR (default
@@ -330,6 +332,92 @@ def close_room(slug, force=False, now=None):
     return True, f"closed {slug}: moved to {dest} (delete for good with: rm -r {dest})"
 
 
+TASKS = ("explore", "investigate", "plan", "design", "prototype", "size", "evaluate", "measure")  # room's TASKS
+FINISHED = ("DONE", "MERGED")  # any other state is an open ticket
+
+
+def git(wt, *args, timeout=30):
+    try:
+        return subprocess.run(["git", "-C", wt, *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess(args, 1, "", str(e))
+
+
+def branches_in_use():
+    """{branch: "<room>/<ticket>"} for every open ticket in every room."""
+    out = {}
+    for slug in room_names():
+        try:
+            with open(os.path.join(STATE, slug, "tickets.json"), encoding="utf-8") as f:
+                tickets = json.load(f).get("tickets") or []
+        except (OSError, ValueError, AttributeError):
+            continue
+        for t in tickets:
+            if isinstance(t, dict) and t.get("branch") and t.get("state") not in FINISHED:
+                out.setdefault(t["branch"], f"{slug}/{t.get('id')}")
+    return out
+
+
+def worktree_verdict(wt, base, in_use):
+    """(prune?, why) for one worktree: merged into the remote base, named by no open ticket, nothing uncommitted."""
+    if not os.path.isdir(wt):
+        return False, "worktree is gone already"
+    branch = git(wt, "symbolic-ref", "--short", "HEAD").stdout.strip()
+    if git(wt, "status", "--porcelain").stdout.strip():
+        return False, "has uncommitted changes"
+    if branch in in_use:
+        return False, f"branch {branch} is named by open ticket {in_use[branch]}"
+    if git(wt, "fetch", "origin", base).returncode:
+        return False, f"could not fetch origin/{base}, so merged is unknown"
+    merged = git(wt, "merge-base", "--is-ancestor", "HEAD", f"origin/{base}").returncode == 0
+    squashed = not git(wt, "diff", f"origin/{base}...HEAD").stdout.strip()  # a squash merge leaves no diff
+    if not (merged or squashed):
+        return False, f"branch {branch or '(detached)'} is not merged into origin/{base}"
+    return True, f"branch {branch or '(detached)'} is merged into origin/{base}, clean, and no open ticket names it"
+
+
+def closeout(slug, base="staging"):
+    """What closing a room archives and prunes. A task's or build's session is archived (never deleted) only once
+    the ticket is finished (DONE or MERGED); its worktree is pruned only when worktree_verdict says so. Tickets
+    adopted from another run are left to that run. Nothing here changes anything."""
+    if not slug or slug.startswith(".") or os.sep in slug or slug not in room_names():
+        return None
+    try:
+        with open(os.path.join(STATE, slug, "tickets.json"), encoding="utf-8") as f:
+            tickets = [t for t in json.load(f).get("tickets") or [] if isinstance(t, dict)]
+    except (OSError, ValueError, AttributeError):
+        tickets = []
+    own = [t for t in tickets if not t.get("source")]
+    in_use = branches_in_use()
+    plan = {"room": slug, "base": base, "archive": [], "keepSessions": [], "prune": [], "keepWorktrees": []}
+    for t in own:
+        who = {"ticket": t.get("id"), "session": t.get("session"), "sessionId": t.get("sessionId")}
+        if not t.get("session"):
+            continue
+        if t.get("state") not in FINISHED:
+            what = "task" if t.get("kind") in TASKS else "build"
+            plan["keepSessions"].append({**who, "why": f"{what} is {t.get('state')}, not finished"})
+            continue
+        plan["archive"].append(who)
+        if t.get("worktree"):
+            ok, why = worktree_verdict(os.path.expanduser(t["worktree"]), base, in_use)
+            plan["prune" if ok else "keepWorktrees"].append(
+                {"ticket": t.get("id"), "worktree": t["worktree"], "branch": t.get("branch"), "why": why})
+    return plan
+
+
+def cmd_closeout(names, base):
+    if len(names) != 1:
+        print("closeout needs one room name; `roomui rooms` lists them")
+        return 2
+    plan = closeout(names[0], base)
+    if plan is None:
+        print(f"{names[0]}: no such room under {STATE}")
+        return 1
+    print(json.dumps(plan, indent=2))
+    return 0
+
+
 def cmd_rooms():
     names = room_names()
     now = datetime.now(timezone.utc)
@@ -429,11 +517,14 @@ def cmd_sampler():
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("action", choices=("start", "stop", "status", "rooms", "close", "sampler"), nargs="?", default="status")
+    ap.add_argument("action", choices=("start", "stop", "status", "rooms", "close", "closeout", "sampler"), nargs="?",
+                    default="status")
     ap.add_argument("names", nargs="*", help="rooms to close")
+    ap.add_argument("--base", default="staging", help="closeout: the remote base a worktree's branch must be merged into")
     ap.add_argument("--force", action="store_true", help="close a room even with open questions or recent events")
     ap.add_argument("--no-ask", action="store_true", help="stop without offering to close rooms")
     a = ap.parse_args()
     run = {"start": cmd_start, "stop": lambda: cmd_stop(not a.no_ask), "status": cmd_status, "rooms": cmd_rooms,
-           "close": lambda: cmd_close(a.names, a.force), "sampler": cmd_sampler}
+           "close": lambda: cmd_close(a.names, a.force), "closeout": lambda: cmd_closeout(a.names, a.base),
+           "sampler": cmd_sampler}
     sys.exit(run[a.action]())

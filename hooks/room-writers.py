@@ -5,11 +5,13 @@ A room dir is a dir holding events.jsonl. In one:
 - ledger.md and tickets.json: only a session marked `sf-orchestrator: ` (a reply that starts with it).
 - events.jsonl and signoffs.jsonl: nobody edits them; `room log` and `room signoff` append.
 - requirements.md, once Joey has signed off the requirements gate: only while a `--change requirements.md`
-  sign-off is newer than SF_SIGNOFF_EDIT_MINUTES (default 60). Same for openspec/changes/<name>/** once
+  sign-off is newer than SF_SIGNOFF_EDIT_MINUTES (default 60). In a topic room the same holds for each
+  feature's features/<slug>/requirements.md (signed for that feature) and each light build's light/<ticket>.md
+  (signed for that ticket), with `--change <that path>`. Same for openspec/changes/<name>/** once
   the spec gate is signed, with `--change openspec/changes/<name>`, looked up in ~/FyxerGh/build-room/<name>/
   and in `.scratch/<name>/` of every worktree of the file's repo.
-- `room signoff` and `room render` run from Bash: orchestrator only. Only a command that runs the CLI
-  counts (`room ...`, `<path>/room ...`, `python3 <path>/room ...`), never text that names it in a quote,
+- `room signoff`, `room render`, `room adopt` and `room refresh` run from Bash: orchestrator only. Only a
+  command that runs the CLI counts (`room ...`, `<path>/room ...`, `python3 <path>/room ...`), never text that names it in a quote,
   a commit message or a heredoc. `bash -c '...'` and `eval` hide an invocation from it.
   `room log` and `room join` (a session Joey started by hand adding itself) are open to every session.
 
@@ -30,6 +32,7 @@ MARKER = b'"text":"sf-orchestrator: '
 EDIT_MINUTES = int(os.environ.get("SF_SIGNOFF_EDIT_MINUTES", "60"))
 REDIRECT = re.compile(r"\d?>>?\|?\s*([^\s;&|<>]+)")
 SPEC = re.compile(r"(.*?)/openspec/changes/([\w.-]+)(?:/|$)")
+CONTRACT = re.compile(r"^(.*)/(?:features/([\w.-]+)/requirements\.md|light/([\w.-]+)\.md)$")
 BUILD_ROOM = os.path.expanduser("~/FyxerGh/build-room")
 # A heredoc body, kept only for the rest of its opening line (where a redirect may sit).
 HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)(\w+)\1([^\n]*)\n.*?(?<=\n)[ \t]*\2[ \t]*(?=\n|$)", re.S)
@@ -83,7 +86,7 @@ def bash_targets(command):
     return targets
 
 
-def runs_room(command, subcommands=("signoff", "render")):
+def runs_room(command, subcommands=("signoff", "render", "adopt", "refresh")):
     """True if a simple command in `command` runs the room CLI with one of `subcommands`."""
     lex = shlex.shlex(HEREDOC.sub(r"\3", command).replace("\n", ";"), posix=True, punctuation_chars=OPERATORS)
     lex.whitespace_split = True
@@ -124,7 +127,17 @@ def check(path, orchestrator, transcript):
     if room and name in ("ledger.md", "tickets.json") and not orchestrator(transcript):
         return f"only the sf:orchestrate session writes {name}. Log what you need with `room log`."
     if name == "requirements.md" and os.path.isfile(os.path.join(d, "signoffs.jsonl")):
-        return locked(signoffs(os.path.join(d, "signoffs.jsonl")), "requirements", "requirements.md")
+        # the root contract: a room with no features, whose sign-offs name none
+        lines = [s for s in signoffs(os.path.join(d, "signoffs.jsonl")) if not s.get("feature")]
+        return locked(lines, "requirements", "requirements.md")
+    m = CONTRACT.match(path)
+    if m and os.path.isfile(os.path.join(m[1], "signoffs.jsonl")):
+        # features/<slug>/requirements.md, signed for that feature; light/<ticket>.md, signed for that ticket
+        rel = os.path.relpath(path, m[1])
+        ours = (lambda s: s.get("feature") == m[2] and s.get("ticket") == "all") if m[2] else (
+            lambda s: s.get("ticket") == m[3])
+        lines = [s for s in signoffs(os.path.join(m[1], "signoffs.jsonl")) if s.get("change") == rel or ours(s)]
+        return locked(lines, "requirements", rel)
     m = SPEC.match(path)
     if m:
         dirs = [os.path.join(BUILD_ROOM, m[2])] + [os.path.join(wt, ".scratch", m[2]) for wt in worktrees(path)]
@@ -156,7 +169,8 @@ def main():
         for target in bash_targets(command):
             reasons.append(check(os.path.join(cwd, os.path.expanduser(target)), orchestrator, transcript))
         if runs_room(command) and not orchestrator(transcript):
-            reasons.append("only the sf:orchestrate session runs `room signoff` and `room render`.")
+            reasons.append("only the sf:orchestrate session runs `room signoff`, `room render`, `room adopt` and "
+                           "`room refresh`.")
     reason = next((r for r in reasons if r), None)
     if reason:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",

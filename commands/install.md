@@ -70,27 +70,28 @@ Then print these, in this order, before step 5:
 
 Do this on every run, even when nothing else changed, and say nothing after it except the restart line.
 
-sf's three options are its `userConfig` (in `.claude-plugin/plugin.json`). Claude Code keeps their values in `~/.claude/settings.json` under `pluginConfigs["<id>"].options`, where `<id>` is sf's key in that file's `enabledPlugins` (usually `sf@sf`). Read the current values:
+sf's four options are its `userConfig` (in `.claude-plugin/plugin.json`). Claude Code keeps their values in `~/.claude/settings.json` under `pluginConfigs["<id>"].options`, where `<id>` is sf's key in that file's `enabledPlugins` (usually `sf@sf`). Read the current values:
 
 ```bash
 python3 -c 'import json,os;s=json.load(open(os.path.expanduser("~/.claude/settings.json")));i=next(k for k in s.get("enabledPlugins",{}) if k.startswith("sf@"));print(i,json.dumps(s.get("pluginConfigs",{}).get(i,{}).get("options",{})))'
 ```
 
-Then one `AskUserQuestion` call with three questions. Each shows the current value and lets me keep it; I type a new one under Other. Blank is allowed for all three:
+Then one `AskUserQuestion` call with four questions. Each shows the current value and lets me keep it; I type a new one under Other. Blank is allowed for all four:
 
 1. **"Branch prefix for the branches sf creates (`<prefix>/feat-PRE-123-title`)? Now: `<current or blank>`."** Header `Branch`. Options: **Keep `<current>`** (or **Keep blank (uses `<whoami output>`)**), and **Clear it (uses `<whoami output>`)** when it is set, else **Use `<whoami output>`**.
 2. **"GitHub login sf assigns the PRs it opens to? Now: `<current or blank>`."** Header `Assignee`. Options: **Keep `<current>`** (or **Keep blank (assigns to me)**), and **Clear it (assigns to me)** when it is set, else **Use `<gh api user -q .login>`**.
 3. **"Linear project sf searches when linking a PR to an issue, and checks when it updates the issue after merge? Now: `<current or blank>`."** Header `Linear`. Options: **Keep `<current>`** (or **Keep blank (searches all my assigned issues)**), and **Clear it (searches all my assigned issues)** when it is set, else **Type a project name under Other**.
+4. **"Linear team a topic room's mirror project goes in (`/sf:room new`)? Now: `<current or blank>`."** Header `Room team`. Options: **Keep `<current>`** (or **Keep blank (asks when a room is mirrored)**), and **Clear it (asks when a room is mirrored)** when it is set, else **Type a team name under Other**.
 
 Write the answers back, changing only that one entry so the rest of `settings.json` stays as it is (`""` for blank), then read them back with the command above:
 
 ```bash
-python3 - <id> '<branchPrefix>' '<prAssignee>' '<linearProject>' <<'PY'
+python3 - <id> '<branchPrefix>' '<prAssignee>' '<linearProject>' '<linearTeam>' <<'PY'
 import json, os, sys
 p = os.path.expanduser("~/.claude/settings.json")
 s = json.load(open(p))
 o = s.setdefault("pluginConfigs", {}).setdefault(sys.argv[1], {}).setdefault("options", {})
-o.update(zip(["branchPrefix", "prAssignee", "linearProject"], sys.argv[2:5]))
+o.update(zip(["branchPrefix", "prAssignee", "linearProject", "linearTeam"], sys.argv[2:6]))
 json.dump(s, open(p, "w"), indent=2)
 open(p, "a").write("\n")
 PY
