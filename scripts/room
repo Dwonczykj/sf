@@ -15,6 +15,7 @@
   new      make a topic room: no contract, this session as orchestrator, Joey's Linear mirror answer
   adopt    add another run as a feature by reference: features/<slug>/source.md, then refresh (orchestrator)
   refresh  copy each adopted run's tickets onto this room's board, reading that run and never writing to it
+  withdraw close a question card that is stale or was answered outside the room, with the reason (every session)
   prs      read each ticket's PR from GitHub with `gh` (read-only) into prs.json, its only writer, with the merge
            order of the unmerged ones; log a `ci` event when a PR's state, CI, review or mergeable state changes
 
@@ -206,6 +207,26 @@ def join(a):
     what = "a new ticket: " + extra["newTitle"] if extra else "watching" if a.ticket == "watching" else a.ticket
     extra = {"name": a.name, **({"sessionId": a.session_id} if a.session_id else {}), **extra}
     print(event(a.dir, ticket, "joined", "join", f"{a.name} joined: {what}", None, **extra))
+    return 0
+
+
+def withdraw(a):
+    """Close a question card without an answer from the room: Joey answered in the asking session, or the
+    question no longer applies. It is an `answer` event whose note starts "re <id>:", which every reader
+    (the board, the Room UI, the mod) already treats as closing that question, so the card leaves the inbox."""
+    error = None if os.path.isdir(a.dir) else f"--dir {a.dir} is not a directory"
+    error = error or one_line(a.reason, "--reason", 200)
+    if not error and (not NAME.match(a.role) or a.role in ("joey", "joined")):
+        error = f"--role {a.role!r} must be a session role such as orchestrator or build, not joey or joined"
+    events = read_jsonl(os.path.join(a.dir, "events.jsonl")) if not error else []
+    question = next((e for e in events if e.get("type") == "question" and e.get("id") == a.question), None)
+    if not error and not question:
+        error = f"no question event with id {a.question}"
+    if not error and any(e.get("type") == "answer" and str(e.get("note", "")).startswith(f"re {a.question}:") for e in events):
+        error = f"question {a.question} is already closed"
+    if error:
+        return fail("withdraw", error)
+    print(event(a.dir, question["ticket"], a.role, "answer", f"re {a.question}: withdrawn, {a.reason.strip()}"))
     return 0
 
 
@@ -1050,12 +1071,16 @@ def main(argv=None):
     adp = cmd("adopt", "add another run as a feature of this room, by reference and read-only", ticket=False)
     adp.add_argument("--feature", required=True, help="the feature slug it becomes, features/<slug>/")
     adp.add_argument("--source", required=True, help="that run's state dir")
+    wp = cmd("withdraw", "close a question card that is stale or was answered outside the room", ticket=False)
+    wp.add_argument("--question", required=True, type=int, help="id of the question event to close")
+    wp.add_argument("--reason", required=True, help="one line: answered in the session, ticket moved on, replaced by ...")
+    wp.add_argument("--role", default="orchestrator", help="who withdraws it: orchestrator, or the asking session's role")
     cmd("refresh", "re-copy each adopted run's tickets onto this room's board; writes only this room", ticket=False)
     cmd("prs", "read each ticket's PR from GitHub into prs.json, with the merge order; no polling", ticket=False)
 
     a = p.parse_args(argv)
     return {"log": log, "ask": ask, "signoff": signoff, "start": start, "render": render, "tier": tier,
-            "podium": podium, "join": join, "new": new, "adopt": adopt, "refresh": refresh, "prs": prs}[a.cmd](a)
+            "podium": podium, "join": join, "new": new, "adopt": adopt, "refresh": refresh, "prs": prs, "withdraw": withdraw}[a.cmd](a)
 
 
 if __name__ == "__main__":

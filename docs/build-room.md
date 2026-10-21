@@ -60,8 +60,13 @@ Each room lives in `~/FyxerGh/build-room/<slug>/`. Each file has one writer, enf
 | `adopt` | orchestrator | adds another run to the room as a feature, by reference |
 | `refresh` | orchestrator | copies adopted runs' tickets onto this room's board, never writing to those runs |
 | `prs` | orchestrator, the mod, the Room UI's Refresh | reads every PR the tickets name from GitHub into `prs.json` |
+| `withdraw` | orchestrator, or the asking session | closes a question card that is stale or was answered outside the room (Joey answered in the asking session), with the reason; every reader treats it as answered |
 
 `scripts/roomui` runs the two local servers behind `/sf:room` (`start`, `stop`, `status`, `rooms`, `close`, `closeout`, `sampler`).
+
+## Stale cards
+
+A question card stays in the inbox until an `answer` event closes it. If Joey answers in the asking session instead of the room, or the work moves on, the card would stay. So the asking worker closes it with `room withdraw` when Joey answers in its session, and the orchestrator checks every open card on each wake (loop step 3b) and withdraws those whose ticket is finished or closed, that a newer question replaced, or that Joey has clearly settled elsewhere. A withdrawal is an `answer` event whose note is `re <id>: withdrawn, <reason>`, so the board, the Room UI and the mod all drop the card, and the reason stays in the log. Cards still undecided are never withdrawn.
 
 ## Bringing sessions into a room
 

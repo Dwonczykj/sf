@@ -710,6 +710,26 @@ with tempfile.TemporaryDirectory() as root:
     assert not hook("Bash", {"command": f"python3 {d}/room prs --dir {d}"}, os.path.join(root, "worker.jsonl"))
 
 
+# withdraw: a stale or already-answered card leaves the inbox; the same readers close it as for an answer.
+with tempfile.TemporaryDirectory() as d:
+    w = run(d, "--ticket", "s1", "--role", "build", "--type", "question", "--note", "Q: retry on 429?")
+    assert w.returncode == 0, w.stderr
+    qid = json.loads(w.stdout)["id"]
+    assert run(d, "--question", str(qid), "--reason", "", cmd="withdraw").returncode != 0  # a reason is required
+    assert run(d, "--question", "99", "--reason", "x", cmd="withdraw").returncode != 0  # no such question
+    assert run(d, "--question", str(qid), "--reason", "x", "--role", "joey", cmd="withdraw").returncode != 0
+    ok = run(d, "--question", str(qid), "--reason", "Joey answered in the session", cmd="withdraw")
+    assert ok.returncode == 0, ok.stderr
+    line = json.loads(ok.stdout)
+    assert (line["type"], line["role"], line["ticket"]) == ("answer", "orchestrator", "s1"), line
+    assert line["note"] == f"re {qid}: withdrawn, Joey answered in the session", line
+    assert run(d, "--question", str(qid), "--reason", "again", cmd="withdraw").returncode != 0  # already closed
+    # render and the other readers see it as closed
+    write(os.path.join(d, "tickets.json"), json.dumps({"slug": "w", "tickets": [{"id": "s1", "title": "T", "state": "BUILDING"}]}))
+    r = subprocess.run([sys.executable, ROOM, "render", "--dir", d], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert f"Q{qid}" not in open(os.path.join(d, "progress.md")).read()
+
 # orchestrate.md's task table and the CLI's TASKS name the same kinds and start tiers.
 import importlib.machinery
 import importlib.util
