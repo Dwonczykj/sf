@@ -745,6 +745,19 @@ with tempfile.TemporaryDirectory() as d:
     assert run(d, "--question", str(qid), cmd="reopen").returncode != 0  # only once
     assert run(d, "--question", "99", cmd="reopen").returncode != 0  # no such question
 
+# qodo_counts: only unresolved Medium and above need fixing; a struck-through issue is done.
+import importlib.machinery
+import importlib.util
+_q = importlib.machinery.SourceFileLoader("room_q", ROOM)
+_qs = importlib.util.spec_from_loader("room_q", _q)
+_qm = importlib.util.module_from_spec(_qs)
+_q.exec_module(_qm)
+_body = ('<h3>Code Review by Qodo</h3><img src="https://img.shields.io/badge/High-FF0000?x" alt="Action required">'
+         '<details><summary>  1.  Leaks a key <code>x</code></summary></details>'
+         '<img src="https://img.shields.io/badge/Medium-634FD1?x"><details><summary>  1.  <s>Billing</s> <code>✓ Resolved</code></summary></details>'
+         '<img src="https://img.shields.io/badge/Low-aaa?x"><details><summary>  1.  Naming</summary></details>')
+assert _qm.qodo_counts(_body) == {"high": 1, "medium": 0, "low": 1, "needs": 1, "titles": ["Leaks a key"]}, _qm.qodo_counts(_body)
+
 # orchestrate.md's task table and the CLI's TASKS name the same kinds and start tiers.
 import importlib.machinery
 import importlib.util

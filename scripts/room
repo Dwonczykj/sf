@@ -797,7 +797,7 @@ FAILED = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STAR
 PR_JSON = ("number,url,title,state,isDraft,baseRefName,headRefName,statusCheckRollup,latestReviews,mergeable,"
            "createdAt,updatedAt,mergedAt,mergedBy,body")
 THREADS = ("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){"
-           "reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login}}}}}}}}")
+           "reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login} url}}}}}}}")
 
 
 class GhError(Exception):
@@ -875,6 +875,7 @@ def fetch_pr(repo, number):
                          "-F", f"n={number}"))
     nodes = (((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {}).get("reviewThreads") or {}
     threads = {"bots": 0, "humans": 0, "botNames": []}
+    by_bot = {}  # per review bot: its unresolved threads, with a link to the first few
     for n in nodes.get("nodes") or []:
         if n.get("isResolved"):
             continue
@@ -882,7 +883,12 @@ def fetch_pr(repo, number):
         login = (first.get("author") or {}).get("login") or "ghost"
         if is_bot(login):
             threads["bots"] += 1
-            threads["botNames"] = sorted(set(threads["botNames"]) | {login.removesuffix("[bot]")})
+            bot = login.removesuffix("[bot]")
+            threads["botNames"] = sorted(set(threads["botNames"]) | {bot})
+            b = by_bot.setdefault(bot, {"open": 0, "urls": []})
+            b["open"] += 1
+            if first.get("url") and len(b["urls"]) < 5:
+                b["urls"].append(first["url"])
         else:
             threads["humans"] += 1
     behind = None
@@ -894,23 +900,63 @@ def fetch_pr(repo, number):
         except (GhError, ValueError):
             behind = None  # a deleted head or a fork: the rest of the PR still counts
     linear = LINEAR_URL.search(p.get("body") or "")
+    qodo = qodo_review(repo, number)
     return {
         "key": f"{repo}#{p['number']}", "number": p["number"], "url": p.get("url"), "repo": repo,
         "title": p.get("title"), "state": p.get("state"), "draft": bool(p.get("isDraft")),
         "base": p.get("baseRefName"), "head": p.get("headRefName"), "ci": ci_summary(p.get("statusCheckRollup")),
         "reviews": [{"login": r["author"]["login"], "state": r.get("state")} for r in p.get("latestReviews") or []
                     if (r.get("author") or {}).get("login") and not is_bot(r["author"]["login"])],
-        "threads": threads, "mergeable": p.get("mergeable") or "UNKNOWN", "behind": behind,
+        "threads": threads, "botThreads": by_bot, "qodo": qodo, "mergeable": p.get("mergeable") or "UNKNOWN", "behind": behind,
         "createdAt": p.get("createdAt"), "updatedAt": p.get("updatedAt"), "mergedAt": p.get("mergedAt"),
         "mergedBy": (p.get("mergedBy") or {}).get("login"), "linearUrl": linear[0] if linear else None,
     }
+
+
+QODO_ISSUE = re.compile(r"<summary>\s*\d+\.\s*(<s>)?(.*?)(</s>)?\s*(<code>\s*✓ Resolved\s*</code>)?\s*</summary>", re.S)
+
+
+def qodo_review(repo, number):
+    """Qodo keeps one comment, "Code Review by Qodo", and edits it on each commit: issues grouped under a severity
+    badge (High, Medium, Low), a resolved one struck through. Read the newest such comment. None when Qodo has not
+    reviewed. `needs` is the unresolved issues at Medium and above, the ones that must be fixed before merge."""
+    try:
+        out = gh("api", f"repos/{repo}/issues/{number}/comments?per_page=100", "--paginate", "--jq",
+                 '.[] | select(.user.login == "qodo-code-review[bot]") | {url: .html_url, body: .body}')
+    except GhError:
+        return None
+    mine = None
+    for line in out.splitlines():
+        try:
+            c = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(c, dict) and "Code Review by Qodo" in (c.get("body") or ""):
+            mine = c
+    if not mine:
+        return None
+    return {"url": mine["url"], **qodo_counts(mine["body"])}
+
+
+def qodo_counts(body):
+    counts, titles = {"high": 0, "medium": 0, "low": 0}, []
+    for part in body.split("img.shields.io/badge/")[1:]:
+        level = part.split("-", 1)[0].lower()
+        level = level if level in counts else "medium"
+        for m in QODO_ISSUE.finditer(part):
+            if m.group(1) or m.group(4):
+                continue  # struck through, or marked resolved
+            counts[level] += 1
+            if level != "low" and len(titles) < 5:
+                titles.append(re.sub(r"<[^>]+>", "", m.group(2).split("<code>")[0]).strip()[:120])
+    return {**counts, "needs": counts["high"] + counts["medium"], "titles": titles}
 
 
 def is_ready(e):
     c, states = e["ci"], [r["state"] for r in e["reviews"]]
     return (e["state"] == "OPEN" and not e["draft"] and not c["failed"] and not c["running"]
             and e["mergeable"] == "MERGEABLE" and not e["threads"]["bots"] + e["threads"]["humans"]
-            and "APPROVED" in states and "CHANGES_REQUESTED" not in states)
+            and not (e.get("qodo") or {}).get("needs") and "APPROVED" in states and "CHANGES_REQUESTED" not in states)
 
 
 def merge_order(entries, tickets):

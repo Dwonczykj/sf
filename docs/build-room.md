@@ -35,7 +35,7 @@ Each room lives in `~/FyxerGh/build-room/<slug>/`. Each file has one writer, enf
 | `ledger.md` | the orchestrator only, rewritten whole on every wake | the event cursor, decisions and open asks the board doesn't show |
 | `progress.md` | `room render` only | the board for people to read |
 | `signoffs.jsonl` | `room signoff` only | the human's answers, gate sign-offs and free messages |
-| `prs.json` | `room prs` only | every PR the room's tickets name, read from GitHub: CI, human reviews, unresolved bot and human threads, mergeable, how far behind, merge times, and the merge order of the unmerged ones |
+| `prs.json` | `room prs` only | every PR the room's tickets name, read from GitHub: CI, human reviews, unresolved bot and human threads (per bot, with links), Qodo's unresolved Medium and above issues read from its "Code Review by Qodo" comment, mergeable, how far behind, merge times, and the merge order of the unmerged ones |
 | `podium-seen.json` | `room podium` only | what Podium last showed for each worker, so a wake logs only what is new |
 | `requirements.md`, `split.md`, `briefs/` | the contract, signed off before any build starts | |
 | `features/<slug>/` | a topic room's feature: its contract, or an adopted run's `source.md` and `summary.md` | one feature each |
@@ -90,7 +90,7 @@ Joey can undo an answer from the Room UI. `room reopen` writes the question agai
 
 ## Pull requests
 
-`room prs --dir <state dir>` reads each PR a ticket names (`pr`, `prUrl`, or a `branch` with an open PR) from GitHub with `gh`, one PR at a time and read-only, and writes `prs.json`. It orders the unmerged PRs by the tickets' `stacksOn` and `after` and by GitHub's base branches, marks the first with nothing blocking it as `next`, and includes adopted tickets' PRs flagged `readOnly`. It logs a `ci` event only when a PR's state, CI, review or mergeable state changes. When `gh` is missing, logged out or rate limited, it keeps the last good data and writes the reason to `error`. The repo comes from the ticket's PR URL or its worktree's git remote.
+`room prs --dir <state dir>` reads each PR a ticket names (`pr`, `prUrl`, or a `branch` with an open PR) from GitHub with `gh`, one PR at a time and read-only, and writes `prs.json`. It orders the unmerged PRs by the tickets' `stacksOn` and `after` and by GitHub's base branches, marks the first with nothing blocking it as `next`, and includes adopted tickets' PRs flagged `readOnly`. A PR is not `ready` while Qodo has an unresolved Medium or High issue. The Room UI's PRs tab shows these: open and draft PRs in merge order with their dependencies and bot status, tickets with no PR yet, and merged PRs (a toggle) newest first. It logs a `ci` event only when a PR's state, CI, review or mergeable state changes. When `gh` is missing, logged out or rate limited, it keeps the last good data and writes the reason to `error`. The repo comes from the ticket's PR URL or its worktree's git remote.
 
 Nothing polls GitHub. Three things run it:
 
