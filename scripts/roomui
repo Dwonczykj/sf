@@ -164,7 +164,9 @@ def start_agent_team():
         return err
     os.makedirs(STATE, exist_ok=True)
     with open(path("log", "agent-team"), "ab") as log:
-        subprocess.Popen(["npm", "start"], cwd=AGENT_TEAM, stdin=subprocess.DEVNULL, stdout=log,
+        # Plain `node server.mjs`, not `npm start`: on agent-team's main that also starts its fleet manager and
+        # iTerm presenter (--fleet --iterm) and takes a machine-wide lock, none of which the Build Room needs.
+        subprocess.Popen(["node", "server.mjs"], cwd=AGENT_TEAM, stdin=subprocess.DEVNULL, stdout=log,
                          stderr=subprocess.STDOUT, start_new_session=True)
     for _ in range(100):
         state, pid = find("agent-team")
