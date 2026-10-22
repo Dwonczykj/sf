@@ -745,6 +745,33 @@ with tempfile.TemporaryDirectory() as d:
     assert run(d, "--question", str(qid), cmd="reopen").returncode != 0  # only once
     assert run(d, "--question", "99", cmd="reopen").returncode != 0  # no such question
 
+# inbox: the orchestrator's session shows new cards, then says which ones closed in the Room UI; an answer it
+# recorded itself (--via chat) is not echoed back, and a withdrawal says who closed it.
+with tempfile.TemporaryDirectory() as d:
+    opts = ["--option", "Retry", "Back off and retry", "--option", "Fail", "Fail fast"]
+    q1 = json.loads(run(d, "--ticket", "s1", "--header", "Rate limit", "--question", "Retry on 429?", *opts, "--from-name", "w1", cmd="ask").stdout)["id"]
+    q2 = json.loads(run(d, "--ticket", "s2", "--header", "Naming", "--question", "Rename it?", *opts, cmd="ask").stdout)["id"]
+    q3 = json.loads(run(d, "--ticket", "s3", "--header", "Scope", "--question", "Split it?", *opts, cmd="ask").stdout)["id"]
+    first = run(d, cmd="inbox")
+    assert first.returncode == 0, first.stderr
+    assert f"Q{q1} · Rate limit · s1 · asked by w1" in first.stdout and "  A) Retry: Back off and retry" in first.stdout, first.stdout
+    assert f'"Q{q3}: A"' in first.stdout, first.stdout
+    cursor = int(first.stdout.strip().splitlines()[-1].split()[1])
+    assert run(d, "--ticket", "s1", "--question", str(q1), "--answer", "Retry", "--quote", "Retry", cmd="signoff").returncode == 0
+    assert run(d, "--ticket", "s2", "--question", str(q2), "--answer", "Fail", "--quote", "B", "--via", "chat", cmd="signoff").returncode == 0
+    assert run(d, "--question", str(q3), "--reason", "ticket merged", cmd="withdraw").returncode == 0
+    assert run(d, "--ticket", "s1", "--question", str(q1), "--answer", "Fail", "--quote", "B", "--via", "chat", cmd="signoff").returncode != 0  # closed already
+    q4 = json.loads(run(d, "--ticket", "s1", "--header", "Again", "--question", "Retry twice?", *opts, cmd="ask").stdout)["id"]
+    later = run(d, "--since", str(cursor), cmd="inbox").stdout
+    assert f"Q{q1} answered in the Room UI: Retry" in later, later
+    assert f"Q{q2} " not in later, later  # answered in the session itself
+    assert f"Q{q3} closed by orchestrator: withdrawn, ticket merged" in later, later
+    assert f"Q{q4} · Again" in later and "Rate limit" not in later, later  # only the new card is printed in full
+    signed = [json.loads(l) for l in open(os.path.join(d, "signoffs.jsonl"))]
+    assert [s.get("via") for s in signed] == [None, "chat"], signed
+    again = run(d, "--since", later.strip().splitlines()[-1].split()[1], cmd="inbox").stdout.strip()
+    assert again.splitlines() == [again.splitlines()[-1]] and again.startswith("cursor "), again  # nothing new
+
 # qodo_counts: only unresolved Medium and above need fixing; a struck-through issue is done.
 import importlib.machinery
 import importlib.util

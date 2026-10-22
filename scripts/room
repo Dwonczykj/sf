@@ -16,6 +16,8 @@
   adopt    add another run as a feature by reference: features/<slug>/source.md, then refresh (orchestrator)
   refresh  copy each adopted run's tickets onto this room's board, reading that run and never writing to it
   withdraw close a question card that is stale or was answered outside the room, with the reason (every session)
+  inbox    the cards to show in the orchestrator's own session since a cursor, and the cards shown before that
+           have since closed in the Room UI or by a withdrawal (orchestrator)
   reopen   undo Joey's answer: re-ask the question as a new open card with `reopens` set (the Room UI's Undo)
   prs      read each ticket's PR from GitHub with `gh` (read-only) into prs.json, its only writer, with the merge
            order of the unmerged ones; log a `ci` event when a PR's state, CI, review or mergeable state changes
@@ -286,19 +288,24 @@ def signoff(a):
                  "openspec/changes/<name>")
     if not error and a.feature is not None and (a.ticket != "all" or not NAME.match(a.feature)):
         error = "--feature goes with --ticket all and names a feature (letters, digits, '.', '_' or '-')"
+    if not error and a.question is not None and any(
+            e.get("type") == "answer" and str(e.get("note", "")).startswith(f"re {a.question}:")
+            for e in read_jsonl(os.path.join(a.dir, "events.jsonl"))):
+        error = f"question {a.question} is already closed (answered in the other place, or withdrawn)"
     if error:
         return fail("signoff", error)
     # A run-wide gate signed for --ticket all covers only the feature named; a ticket's line takes its feature.
     feature = a.feature or ticket_of(a.dir, a.ticket).get("feature")
     what = {k: v for k, v in (("feature", feature), ("gate", a.gate), ("question", a.question and int(a.question)),
                               ("change", a.change), ("message", a.message), ("tier", a.tier)) if v}
+    via = {"via": "chat"} if getattr(a, "via", "room") == "chat" else {}
     line = append(os.path.join(a.dir, "signoffs.jsonl"),
-                  {"ticket": a.ticket, **what, "answer": a.answer.strip(), "quote": a.quote.strip()})
+                  {"ticket": a.ticket, **what, "answer": a.answer.strip(), "quote": a.quote.strip(), **via})
     # The answer event wakes the orchestrator's monitor and closes the question on the board. Its role is
     # joey, never orchestrator, so an orchestrator skipping its own events still wakes on it.
     label = ("message" if a.message else f"tier {a.tier}" if a.tier else f"re {a.question}" if a.question
              else f"signoff {a.gate or a.change}")
-    event(a.dir, a.ticket, "joey", "answer", f"{label}: {a.answer.strip()}"[:MAX_NOTE], feature=feature)
+    event(a.dir, a.ticket, "joey", "answer", f"{label}: {a.answer.strip()}"[:MAX_NOTE], feature=feature, **via)
     print(line)
     return 0
 
@@ -322,6 +329,50 @@ def reopen(a):
     extra = {k: question[k] for k in ("from",) if k in question}
     print(event(a.dir, question["ticket"], question["role"], "question", question["note"], None,
                 ask=question["ask"], reopens=a.question, **extra))
+    return 0
+
+
+CLOSED = re.compile(r"re (\d+): (.*)", re.S)
+
+
+def card_text(q):
+    """One question card as plain text for a Claude session: the same card the Room UI shows, lettered."""
+    ask = q["ask"]
+    who = (q.get("from") or {}).get("name") or q.get("role", "")
+    lines = [f"Q{q['id']} · {ask['header']} · {q['ticket']} · asked by {who}"
+             + (f" · reopens Q{q['reopens']}, your earlier answer was taken back" if q.get("reopens") else ""),
+             ask["question"], *[f"    {l}" for l in ask.get("body") or []]]
+    for i, o in enumerate(ask["options"]):
+        lines.append(f"  {chr(65 + i)}) {o['label']}{': ' + o['description'] if o.get('description') else ''}")
+    lines.append("  Other: reply in your own words" + (" (pick one or more letters)" if ask.get("multiSelect") else ""))
+    lines.append(f'Reply here with "Q{q["id"]}: A" or your own words, or answer it in the Room UI.')
+    return "\n".join(lines)
+
+
+def inbox(a):
+    """What the orchestrator shows Joey in its own session: the cards opened since --since, and the cards shown
+    earlier that have since closed somewhere else (the Room UI, a withdrawal). Ends with the cursor to pass next."""
+    if not os.path.isdir(a.dir):
+        return fail("inbox", f"--dir {a.dir} is not a directory")
+    events = read_jsonl(os.path.join(a.dir, "events.jsonl"))
+    since = a.since or 0
+    closed = {}
+    for e in events:
+        m = e.get("type") == "answer" and CLOSED.match(str(e.get("note", "")))
+        if m:
+            closed.setdefault(int(m.group(1)), e)
+    cards = {e["id"]: e for e in events if e.get("type") == "question" and e.get("ask")}
+    out = []
+    for qid, e in closed.items():
+        if qid in cards and qid <= since < e["id"] and e.get("via") != "chat":  # shown earlier, closed elsewhere
+            text = CLOSED.match(e["note"]).group(2)
+            where = "answered in the Room UI" if e.get("role") == "joey" else f"closed by {e.get('role')}"
+            out.append(f"Q{qid} {where}: {text}")
+    for qid, q in cards.items():
+        if qid > since and qid not in closed:
+            out += ["", card_text(q)]
+    print("\n".join(out).strip())
+    print(f"cursor {max([since, *(e.get('id', 0) for e in events)])}")
     return 0
 
 
@@ -1121,6 +1172,8 @@ def main(argv=None):
     sp.add_argument("--answer", help="the option Joey picked, or a one-line summary; optional with --message or --tier")
     sp.add_argument("--quote", required=True, help="Joey's words, verbatim")
     sp.add_argument("--feature", help="with --ticket all: the feature whose requirements, split or spec this signs")
+    sp.add_argument("--via", choices=("room", "chat"), default="room",
+                    help="where Joey answered: the Room UI (default), or the orchestrator's Claude session (chat)")
 
     stp = cmd("start", "check a ticket's human gates, then print what to start", ticket=False)
     stp.add_argument("ticket")
@@ -1144,6 +1197,8 @@ def main(argv=None):
     wp.add_argument("--question", required=True, type=int, help="id of the question event to close")
     wp.add_argument("--reason", required=True, help="one line: answered in the session, ticket moved on, replaced by ...")
     wp.add_argument("--role", default="orchestrator", help="who withdraws it: orchestrator, or the asking session's role")
+    ip = cmd("inbox", "the cards to show Joey in the orchestrator's session, and those closed elsewhere", ticket=False)
+    ip.add_argument("--since", type=int, help="the cursor the last inbox printed; leave out for every open card")
     rp = cmd("reopen", "undo Joey's answer: re-ask the question as a new open card", ticket=False)
     rp.add_argument("--question", required=True, type=int, help="id of the answered question event")
     cmd("refresh", "re-copy each adopted run's tickets onto this room's board; writes only this room", ticket=False)
@@ -1151,7 +1206,7 @@ def main(argv=None):
 
     a = p.parse_args(argv)
     return {"log": log, "ask": ask, "signoff": signoff, "start": start, "render": render, "tier": tier,
-            "podium": podium, "join": join, "new": new, "adopt": adopt, "refresh": refresh, "prs": prs, "withdraw": withdraw, "reopen": reopen}[a.cmd](a)
+            "podium": podium, "join": join, "new": new, "adopt": adopt, "refresh": refresh, "prs": prs, "withdraw": withdraw, "reopen": reopen, "inbox": inbox}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -61,6 +61,7 @@ Each room lives in `~/FyxerGh/build-room/<slug>/`. Each file has one writer, enf
 | `refresh` | orchestrator | copies adopted runs' tickets onto this room's board, never writing to those runs |
 | `prs` | orchestrator, the mod, the Room UI's Refresh | reads every PR the tickets name from GitHub into `prs.json` |
 | `withdraw` | orchestrator, or the asking session | closes a question card that is stale or was answered outside the room (Joey answered in the asking session), with the reason; every reader treats it as answered |
+| `inbox` | orchestrator | prints the cards opened since a cursor for the orchestrator's own session, and a line for each card shown earlier that has since closed elsewhere; ends with `cursor <n>` |
 | `reopen` | the Room UI (Joey's Undo) | undoes an answer: re-asks the question as a new open `question` event with `reopens: <old id>`, once per question |
 
 `scripts/roomui` runs the two local servers behind `/sf:room` (`start`, `stop`, `status`, `rooms`, `close`, `closeout`, `sampler`).
@@ -69,7 +70,7 @@ Each room lives in `~/FyxerGh/build-room/<slug>/`. Each file has one writer, enf
 
 A question card stays in the inbox until an `answer` event closes it. If Joey answers in the asking session instead of the room, or the work moves on, the card would stay. So the asking worker closes it with `room withdraw` when Joey answers in its session, and the orchestrator checks every open card on each wake (loop step 3b) and withdraws those whose ticket is finished or closed, that a newer question replaced, or that Joey has clearly settled elsewhere. A withdrawal is an `answer` event whose note is `re <id>: withdrawn, <reason>`, so the board, the Room UI and the mod all drop the card, and the reason stays in the log. Cards still undecided are never withdrawn.
 
-The orchestrator also prints each open card in its own session, once, and records an answer typed there with `room signoff`, so a card can be answered from either place; an answer given in the Room UI closes the card there as before. It prints text rather than asking, so the loop keeps running.
+Every card can be answered from the Room UI or the orchestrator's own Claude session. On each wake the orchestrator runs `room inbox --since <cursor>` and prints what it returns: each card opened since the cursor, lettered, and a line for each card shown earlier that closed in the Room UI or by a withdrawal. An answer typed in the session is recorded with `room signoff --via chat`, which closes the card in the Room UI, and `inbox` does not echo it back. `signoff` refuses a card that is already closed, so answering in both places at once records only the first. The orchestrator prints text rather than asking, so the loop keeps running.
 
 Joey can undo an answer from the Room UI. `room reopen` writes the question again as a new open card whose `reopens` field names the old one, so every reader shows it without change. The server cannot press Escape in Claude, so on each wake the orchestrator checks for a `reopens` question whose old answer it has not acted on (drop that answer and wait for the new one), and for one it has already acted on (stop the worker that started from it, say so in the ledger, then wait).
 
