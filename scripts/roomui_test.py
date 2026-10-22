@@ -89,29 +89,27 @@ with tempfile.TemporaryDirectory() as d:
     assert len(archived) == 1 and os.path.exists(os.path.join(d, ".closed", archived[0], "events.jsonl"))
     assert roomui.close_room("waiting", force=True)[0] and roomui.room_names() == ["live"]
 
-    # the follow-up after stop: default is no, y closes only that room, no tty means no prompt
-    write_room(d, "second", [event(1, 3000, "note")], [{"id": "a"}])
-    real_input, real_isatty = builtins.input, roomui.sys.stdin.isatty
+    # a room whose orchestrator is still running is not closed, even with --force
+    write_room(d, "busy", [event(1, 3000, "note")], [{"id": "a"}])
+    sessions = os.path.join(d, ".sessions")
+    os.makedirs(sessions)
+    real_sessions, roomui.SESSIONS = roomui.SESSIONS, sessions
     try:
-        roomui.sys.stdin.isatty = lambda: True
-        for answers, left in ((["", ""], ["live", "second"]), (["n", "y"], ["live"]), (["yes", "N"], ["second"])):
-            if "second" not in roomui.room_names():
-                write_room(d, "second", [event(1, 3000, "note")], [{"id": "a"}])
-            if "live" not in roomui.room_names():
-                write_room(d, "live", [event(1, 2, "note")], [{"id": "a"}])
-            it = iter(answers)
-            builtins.input = lambda prompt="": next(it)
-            with contextlib.redirect_stdout(io.StringIO()):
-                roomui.offer_close(True)
-            assert roomui.room_names() == left, (answers, roomui.room_names())
-        roomui.sys.stdin.isatty = lambda: False
-        builtins.input = lambda prompt="": (_ for _ in ()).throw(AssertionError("must not prompt without a tty"))
+        with open(os.path.join(sessions, "1.json"), "w") as f:
+            json.dump({"name": "orch", "pid": os.getpid()}, f)
+        with open(os.path.join(sessions, "2.json"), "w") as f:
+            f.write("{ half written")
+        ok, msg = roomui.close_room("busy", force=True)
+        assert not ok and "still running" in msg and "busy" in roomui.room_names(), msg
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            roomui.offer_close(True)
-        assert "roomui close <room>" in out.getvalue() and roomui.room_names()
+            assert roomui.cmd_closeout(["busy"], "staging") == 1
+        assert "still running" in out.getvalue(), out.getvalue()
+        with open(os.path.join(sessions, "1.json"), "w") as f:
+            json.dump({"name": "orch", "pid": 2 ** 22 + 7}, f)  # the session has ended
+        assert roomui.close_room("busy", force=True)[0]
     finally:
-        builtins.input, roomui.sys.stdin.isatty = real_input, real_isatty
+        roomui.SESSIONS = real_sessions
 # closeout: which task and build sessions to archive and which of their worktrees to prune, from real git worktrees
 import subprocess
 room_loader = importlib.machinery.SourceFileLoader("room_cli", os.path.join(HERE, "room"))

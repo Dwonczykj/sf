@@ -1,15 +1,14 @@
 ---
-description: "Start, stop or check the two local UIs behind sf:orchestrate: the Build Room (:7790, served by sf itself) and Podium (:4317), with a minute-by-minute memory log. Stop then offers to close each room. `new <topic>` opens a topic room with this session as orchestrator. `join` adds a session Joey started by hand to a run."
+description: "Start, stop or check the two local UIs behind sf:orchestrate: the Build Room (:7790, served by sf itself) and Podium (:4317), with a minute-by-minute memory log. Stop leaves every room open; `close <room>` closes a finished one. `new <topic>` opens a topic room with this session as orchestrator. `join` adds a session Joey started by hand to a run."
 ---
-If the first argument is `join`, follow "Join a run" below instead of running roomui. If it is `new`, follow "Open a topic room". Closing a room, from `close` or after `stop`, follows "Close a room".
+If the first argument is `join`, follow "Join a run" below instead of running roomui. If it is `new`, follow "Open a topic room". Closing a room, from `close`, follows "Close a room".
 
 Otherwise run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/roomui $ARGUMENTS` (arguments: `start`, `stop`, `status`, `rooms` or `close <room>`; `status` when none) and show its output as it is. Do not open a browser, and do not run anything else against the servers.
 
 - `start` starts whichever of the Build Room and Podium is down (detached, so they outlive this session) and a sampler that logs each server's pid, RSS and CPU once a minute to `~/FyxerGh/build-room/roomui-samples.log`. A server that is up is left alone.
-- `stop` stops both servers and the sampler. It checks each process's command line first and leaves anything else on the ports untouched.
-  After the servers are stopped it lists the rooms (runs under `~/FyxerGh/build-room/`) with their open questions and time since the last event. If it lists any, ask Joey which to close: one `AskUserQuestion` with a multi-select, one option per room using the line it printed, and "None" first and recommended, so the default is no. For each room he picks, follow "Close a room" with `--force`; the printed line already told him about any open questions, so his pick is the confirmation. Never close a room he did not pick.
+- `stop` stops both servers and the sampler. It checks each process's command line first and leaves anything else on the ports untouched. It never closes a room: a room stays open until Joey closes it with `close`, because stopping the page does not stop the orchestrator or workers behind it.
 - `rooms` lists the rooms without stopping anything.
-- `close <room>...`: follow "Close a room" for each. The script's own `close` archives each room into `~/FyxerGh/build-room/.closed/<room>-<time>/` instead of deleting it, and prints the `rm -r` for deleting it for good. It refuses a room with open questions or an event in the last 10 minutes unless `--force` is given, and it refuses any name that is not a room.
+- `close <room>...`: follow "Close a room" for each. The script's own `close` archives each room into `~/FyxerGh/build-room/.closed/<room>-<time>/` instead of deleting it, and prints the `rm -r` for deleting it for good. It refuses a room with open questions or an event in the last 10 minutes unless `--force` is given, refuses a room whose orchestrator session is still running (even with `--force`: stop that session first, since closing moves the folder it works in), and refuses any name that is not a room.
 - `status` shows each server's state, pid, RSS, CPU, uptime and URL, and its peak and average RSS over the last 24 hours.
 
 The Build Room is `roomserver/server.mjs` in this plugin, run with `node` (Node 20.11 or newer); `BUILD_ROOM_PORT` moves it off 7790. Podium's repo comes from `ROOMUI_PODIUM_DIR` (default `~/FyxerGh/podium`); the script says so if Node or Podium is missing. Never read or print Podium's token or `~/.podium/config.env`.
@@ -38,9 +37,9 @@ A topic room holds one topic's work with no contract up front: tasks that start 
 
 For each room being closed:
 
-1. Run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/roomui closeout <room>`. It changes nothing and prints, as JSON, the finished task and build sessions to archive (DONE or MERGED), the unfinished ones it keeps, their worktrees to prune and the ones it keeps, each kept item with its reason. A worktree is pruned only if its branch is merged into the remote base (`--base`, default `staging`), no open ticket in any room names that branch, and it has no uncommitted changes.
+1. Run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/roomui closeout <room>`. If it says the orchestrator is still running, stop: tell Joey to stop that session first, and do nothing else for this room. Otherwise it changes nothing and prints, as JSON, the finished task and build sessions to archive (DONE or MERGED), the unfinished ones it keeps, their worktrees to prune and the ones it keeps, each kept item with its reason. A worktree is pruned only if its branch is merged into the remote base (`--base`, default `staging`), no open ticket in any room names that branch, and it has no uncommitted changes.
 2. If the room is mirrored to Linear, post its `closed` checkpoint ("Linear mirror" in `commands/orchestrate.md`).
 3. Archive each session under `archive` with `mcp__ccd_session_mgmt__archive_session` (load it with `ToolSearch`). Archive only, never delete. Without the tool (a CLI session), list them for Joey to archive.
 4. Prune the worktrees under `prune` through the `sf:prune-merged-worktrees` skill, limited to exactly those paths. Leave every other worktree alone.
-5. Run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/roomui close <room>` (with `--force` when Joey picked it after `stop`, or asked for it).
+5. Run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/roomui close <room>` (with `--force` only when Joey asked for it).
 6. Report what was archived and pruned, and list every kept session and worktree with its reason.
