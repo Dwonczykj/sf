@@ -11,7 +11,6 @@ const hashOf = (text) => {
 
 const TOKEN = document.querySelector('meta[name="room-token"]').content;
 const FORK_AT = 500_000; // orchestrate.md forks the orchestrator here
-const MAX_BUILDERS = 3;
 const GATES = [
   ["framed", "Framed"], ["requirements", "Requirements"], ["grilled", "Grilled"], ["impact", "Impact sized"],
   ["steward", "Steward review"], ["split", "Split"], ["spec", "Spec"], ["planReview", "Plan review"],
@@ -61,6 +60,7 @@ const store = {
   mode: "card", // what the composer sends: a reply to the selected card, or a plain message to the orchestrator
   sel: null, // the selected card, "run:question"; the first open card when null or no longer open
   chatOpen: false,
+  roomMenu: false, // the header's room menu is open
   menu: { hi: 0, closed: false },
   history: null, // the feature the merge-history modal shows ("" for all), or null when it is closed
   checking: new Set(), // runs whose Refresh is running
@@ -181,56 +181,27 @@ const unassignedStrip = (run) => {
 };
 
 // ---------------------------------------------------------------- header
+// One header on every view: the room as a title that opens a menu of rooms, and the tabs. The counts the old
+// headers carried sit on the tabs: cards waiting on you on Room, open PRs on PRs.
 const renderHead = (run, route) => {
   const runs = [...store.runs.values()];
-  const tabs = [["board", "Board"], ["room", "Room"], ["ledger", "Ledger"], ["prs", "PRs"]]
-    .map(([id, name]) => `<a href="#${id}" class="${route.view === id || (id === "board" && route.view === "ticket") ? "on" : ""}">${name}</a>`)
+  const badge = (n, warn) => (n ? `<span class="tab-n${warn ? " warn" : ""}">${n}</span>` : "");
+  const tabs = [["board", "Board"], ["room", "Room", badge(run ? openQuestions(run).length : 0, true)], ["ledger", "Ledger"],
+    ["prs", "PRs", badge(run ? unmerged(run).length : 0)]]
+    .map(([id, name, n = ""]) => `<a href="#${id}" class="${route.view === id || (id === "board" && route.view === "ticket") ? "on" : ""}">${name}${n}</a>`)
     .join("");
-  const picker = runs.length > 1
-    ? `<select id="run-pick" aria-label="Run">${runs.map((r) => `<option value="${h(r.id)}"${r === run ? " selected" : ""}>${h(r.id)}${r !== run && openQuestions(r).length ? ` (${openQuestions(r).length} waiting)` : ""}</option>`).join("")}</select>`
-    : "";
+  const head = document.getElementById("head");
   if (!run) {
-    document.getElementById("head").innerHTML = `<div class="brand"><div class="logo">BR</div><div><div class="title">Build Room</div><div class="muted small">No state dir. Start the server with --room &lt;dir&gt;, or put a run under ~/FyxerGh/build-room/.</div></div></div><nav>${tabs}</nav>`;
+    head.innerHTML = `<div class="room-name">Build Room</div><span class="muted small">No rooms yet. Start one with /sf:orchestrate or /sf:room new &lt;topic&gt;.</span>`;
     return;
   }
-  const tickets = ticketsOf(run);
-  const waiting = openQuestions(run).length;
-  const last = run.events.at(-1);
-  const frame = run.tickets?.frame?.[0];
-  const ctx = run.context;
-  const orchName = run.tickets?.orchestrator;
-  const orchLive = ctx?.live;
-  const builders = tickets.filter((t) => ["BUILDING", "LOCAL"].includes(t.state) && !isTask(t)).length;
-  if (route.view === "board") {
-    const facts = [last && `last event ${fmtTime(last.ts)}`, orchName && `orchestrator ${orchName}${orchLive ? "" : " (not live)"}`,
-      ctx?.tokens && `context ${fmtTokens(ctx.tokens)} / ${fmtTokens(FORK_AT)}`, `builders ${builders} / ${MAX_BUILDERS}`].filter(Boolean).join(" · ");
-    document.getElementById("head").innerHTML = `
-      <div class="brand"><div class="logo">BR</div><div style="min-width:0">
-        <div class="title" title="${h(frame ?? "")}">${h(run.tickets?.slug ?? run.id)}</div>
-        <div class="muted small ellipsis" title="${h(facts)}">${h(facts)}</div>
-      </div></div>
-      ${picker}
-      <nav class="quiet" aria-label="Views"><a href="#room">Room chat</a><a href="#ledger">Ledger</a><a href="#prs">Pull requests (${unmerged(run).length})</a><button type="button" data-act="prs-history">Merged (${mergedPrs(run).length})</button></nav>`;
-    const pick = document.getElementById("run-pick");
-    if (pick) pick.onchange = () => selectRun(pick.value);
-    return;
-  }
-  document.getElementById("head").innerHTML = `
-    <div class="brand"><div class="logo">BR</div><div style="min-width:0">
-      <div class="title">${h(run.tickets?.slug ?? run.id)}${frame ? ` · ${h(clip(frame, 70))}` : ""}</div>
-      <div class="muted small">${tickets.length} tickets · ${waiting} waiting on you${last ? ` · last event ${h(fmtTime(last.ts))}` : ""}</div>
-    </div></div>
-    <nav aria-label="Views">${tabs}</nav>
-    ${picker}
-    <div class="chips">
-      ${orchName ? `<span class="chip" style="${orchLive ? "background:rgba(31,138,76,.12);color:#166534" : ""}"><span class="dot" style="background:${orchLive ? "#1f8a4c" : "#98a2b3"}"></span>Orchestrator · ${h(orchName)}</span>` : ""}
-      ${ctx?.tokens ? `<span class="chip">Context ${fmtTokens(ctx.tokens)} / ${fmtTokens(FORK_AT)}</span>` : ""}
-      <span class="chip">Builders ${builders} / ${MAX_BUILDERS}</span>
-      ${waiting ? `<a class="chip waiting-chip" href="#board">${waiting} waiting on you</a>` : ""}
-      <span class="chip" style="background:rgba(10,91,211,.10);color:#0a4fb8">Local</span>
-    </div>`;
-  const pick = document.getElementById("run-pick");
-  if (pick) pick.onchange = () => selectRun(pick.value);
+  const others = runs.filter((r) => r !== run).reduce((n, r) => n + openQuestions(r).length, 0);
+  const switcher = runs.length > 1
+    ? `<details class="rooms" id="room-menu"${store.roomMenu ? " open" : ""}><summary aria-label="Switch room"><span class="room-name">${h(run.id)}</span>${badge(others, true)}
+        <svg class="chev" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 5l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary>
+        <div class="room-list" role="menu">${runs.map((r) => `<button type="button" role="menuitemradio" aria-checked="${r === run}" class="${r === run ? "on" : ""}" data-act="pick-room" data-run="${h(r.id)}"><span>${h(r.id)}</span>${badge(openQuestions(r).length, true)}</button>`).join("")}</div></details>`
+    : `<div class="room-name">${h(run.id)}</div>`;
+  head.innerHTML = `${switcher}<nav aria-label="Views">${tabs}</nav>`;
 };
 
 // ---------------------------------------------------------------- pull requests
@@ -482,12 +453,14 @@ const prsView = (run) => {
   const grid = (cards) => `<div class="sgrid">${cards.join("")}</div>`;
   const section = (title, rule, cards, empty) => `<section class="stage"><div class="stage-head"><h2>${title}</h2><span class="muted small">${rule}</span></div>${cards.length ? grid(cards) : `<div class="muted">${empty}</div>`}</section>`;
   return `${staleBanner(run)}<div class="stage-head" style="margin-bottom:12px"><span class="muted small">${h(doc?.checkedAt ? `Checked on GitHub ${ago(doc.checkedAt)}` : "Not checked on GitHub yet")}</span><span class="grow"></span>
+      <button type="button" class="chip" data-act="prs-history">Merge history</button>
       <button type="button" class="chip${showMerged ? " on" : ""}" data-act="prs-merged" data-run="${h(run.id)}" aria-pressed="${showMerged}">Show merged (${merged.length})</button>
       <button type="button" class="btn ghost" data-act="prs-refresh" data-run="${h(run.id)}"${busy ? " disabled" : ""}>${busy ? "Checking…" : "Refresh"}</button></div>
     ${doc?.error ? `<div class="err">${h(doc.error)}</div>` : ""}${failed ? `<div class="err">${h(failed)}</div>` : ""}
     ${section("Open and draft", "In merge order: a PR another depends on comes first.", open.map((e) => prCard(run, e, tix(e))), "No unmerged pull requests.")}
     ${section("Not built yet", "Tickets with no PR. They merge after what they depend on.", unbuilt.map((t) => unbuiltCard(run, t)), "Every ticket has a PR.")}
-    ${showMerged ? section("Merged", "Newest first.", merged.map((e) => prCard(run, e, tix(e))), "Nothing merged yet.") : ""}`;
+    ${showMerged ? section("Merged", "Newest first.", merged.map((e) => prCard(run, e, tix(e))), "Nothing merged yet.") : ""}
+    ${store.history !== null ? historyModal(run) : ""}`;
 };
 
 // Hovering (or focusing) a PR link shows what GitHub said last: title, state, review, CI, conflicts, threads.
@@ -1012,6 +985,8 @@ const refreshPrs = async (runId) => {
 };
 const focusSoon = (id) => setTimeout(() => document.getElementById(id)?.focus(), 0); // after render's microtask
 document.addEventListener("click", (e) => {
+  const menu = document.getElementById("room-menu");
+  if (menu?.open && !e.target.closest("#room-menu")) menu.open = false; // a click anywhere else closes it
   const el = e.target.closest("[data-act]");
   if (!el || el.disabled) return;
   const { act } = el.dataset;
@@ -1022,6 +997,7 @@ document.addEventListener("click", (e) => {
   else if (act === "sheet-close") { store.sheet = false; focusSoon("answer-now"); }
   else if (act === "prs-refresh") refreshPrs(el.dataset.run);
   else if (act === "switch-room" && el.closest("#bar")) return selectRun(el.dataset.run); // #cards has its own handler
+  else if (act === "pick-room") { store.roomMenu = false; return selectRun(el.dataset.run); }
   else if (act === "prs-merged") { if (store.showMerged.has(el.dataset.run)) store.showMerged.delete(el.dataset.run); else store.showMerged.add(el.dataset.run); }
   else if (act === "prs-history") store.history = "";
   else if (act === "prs-filter") store.history = el.dataset.feature;
@@ -1031,12 +1007,16 @@ document.addEventListener("click", (e) => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  if (store.roomMenu) { store.roomMenu = false; render(); return; }
   if (store.history !== null) store.history = null;
   else if (store.sheet) { store.sheet = false; focusSoon("answer-now"); } else return;
   render();
 });
 
-document.addEventListener("toggle", (e) => { if (e.target.closest("#chat")) store.chatOpen = e.target.open; }, true);
+document.addEventListener("toggle", (e) => {
+  if (e.target.closest("#chat")) store.chatOpen = e.target.open;
+  if (e.target.id === "room-menu") store.roomMenu = e.target.open;
+}, true);
 
 // Drag the side panel's left edge to resize it. The width is kept per browser; double-click resets it.
 const grip = document.getElementById("side-grip");

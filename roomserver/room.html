@@ -39,7 +39,20 @@
       h2 { font-size: 15px; font-weight: 700; }
       .wrap { position: relative; max-width: 1480px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
 
-      header { padding: 12px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+      header { padding: 10px 16px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; position: relative; z-index: 8; }
+      .room-name { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .rooms { position: relative; min-width: 0; }
+      .rooms summary { list-style: none; display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 4px 8px; margin-left: -8px; border-radius: 10px; }
+      .rooms summary::-webkit-details-marker { display: none; }
+      .rooms summary:hover, .rooms[open] summary { background: rgba(15, 23, 42, 0.06); }
+      .rooms .chev { flex: none; color: var(--ink-2); transition: transform 0.15s; }
+      .rooms[open] .chev { transform: rotate(180deg); }
+      .room-list { position: absolute; top: calc(100% + 6px); left: -8px; min-width: 260px; padding: 6px; display: flex; flex-direction: column; gap: 2px; border-radius: 14px; background: rgba(255, 255, 255, 0.98); border: 1px solid rgba(15, 23, 42, 0.1); box-shadow: 0 16px 40px rgba(15, 23, 42, 0.2); }
+      .room-list button { display: flex; justify-content: space-between; align-items: center; gap: 10px; text-align: left; border: 0; background: transparent; padding: 8px 10px; border-radius: 9px; font-size: 13px; font-weight: 600; }
+      .room-list button:hover { background: rgba(10, 91, 211, 0.08); }
+      .room-list button.on { background: rgba(15, 23, 42, 0.06); }
+      .tab-n { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px; border-radius: 9px; font-size: 11px; font-weight: 700; background: rgba(15, 23, 42, 0.1); color: var(--ink-2); }
+      .tab-n.warn { background: var(--amber); color: #fff; }
       .brand { display: flex; align-items: center; gap: 10px; flex: 1 1 320px; min-width: 0; }
       .logo { width: 32px; height: 32px; border-radius: 9px; background: var(--ink); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex: none; }
       .title { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -83,10 +96,7 @@
       .grow { flex: 1 1 0; }
       .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       a:focus-visible, button:focus-visible, select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-      .quiet, .pipe { background: none; border-radius: 0; }
-      .quiet { display: flex; gap: 16px; align-items: center; padding: 0; }
-      .quiet a, .quiet button { border: 0; background: none; padding: 0; border-radius: 0; font-size: 12px; font-weight: 600; color: var(--ink-2); text-decoration: none; }
-      .quiet a:hover, .quiet button:hover { color: var(--ink); text-decoration: underline; }
+      .pipe { background: none; border-radius: 0; }
       .pipe { display: flex; gap: 8px; overflow-x: auto; padding: 3px; margin: -3px; }
       .tile { flex: 1 1 0; min-width: 112px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 16px; border-radius: 14px; background: rgba(255, 255, 255, 0.4); border: 1px solid rgba(255, 255, 255, 0.6); color: var(--ink-3); text-align: left; }
       .tile:hover { background: rgba(255, 255, 255, 0.65); }
