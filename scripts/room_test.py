@@ -730,6 +730,21 @@ with tempfile.TemporaryDirectory() as d:
     assert r.returncode == 0, r.stderr
     assert f"Q{qid}" not in open(os.path.join(d, "progress.md")).read()
 
+# reopen: Undo re-asks an answered question as a new open card, once.
+with tempfile.TemporaryDirectory() as d:
+    opts = ["--option", "Retry", "Back off and retry", "--option", "Fail", "Fail fast"]
+    r = run(d, "--ticket", "s1", "--header", "Rate limit", "--question", "Retry on 429?", *opts, "--from-name", "w1", cmd="ask")
+    qid = json.loads(r.stdout)["id"]
+    assert run(d, "--question", str(qid), cmd="reopen").returncode != 0  # still open
+    assert run(d, "--ticket", "s1", "--question", str(qid), "--answer", "Retry", "--quote", "Retry", cmd="signoff").returncode == 0
+    ok = run(d, "--question", str(qid), cmd="reopen")
+    assert ok.returncode == 0, ok.stderr
+    line = json.loads(ok.stdout)
+    assert (line["type"], line["ticket"], line["reopens"], line["from"]["name"]) == ("question", "s1", qid, "w1"), line
+    assert line["ask"]["question"] == "Retry on 429?", line
+    assert run(d, "--question", str(qid), cmd="reopen").returncode != 0  # only once
+    assert run(d, "--question", "99", cmd="reopen").returncode != 0  # no such question
+
 # orchestrate.md's task table and the CLI's TASKS name the same kinds and start tiers.
 import importlib.machinery
 import importlib.util
