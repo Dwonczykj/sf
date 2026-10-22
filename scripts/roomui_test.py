@@ -24,15 +24,15 @@ assert roomui.duration(175) == "2m 55s" and roomui.duration(3725) == "1h 02m" an
 
 now = datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc)
 log = [
-    "2026-10-18T11:59:00Z agent-team 1 999.0 0.0",  # older than 24h, ignored
-    "2026-10-18T12:01:00Z agent-team 1 40.0 0.0",
-    "2026-10-19T11:00:00Z agent-team 1 60.0 1.0",
+    "2026-10-18T11:59:00Z build-room 1 999.0 0.0",  # older than 24h, ignored
+    "2026-10-18T12:01:00Z build-room 1 40.0 0.0",
+    "2026-10-19T11:00:00Z build-room 1 60.0 1.0",
     "2026-10-19T11:00:00Z podium 2 56.0 0.0",
     "not a sample line",
     "2026-10-19T11:01:00Z podium 2 oops 0.0",
 ]
 s = roomui.summarise(log, now)
-assert s == {"agent-team": (2, 60.0, 50.0), "podium": (1, 56.0, 56.0)}, s
+assert s == {"build-room": (2, 60.0, 50.0), "podium": (1, 56.0, 56.0)}, s
 assert roomui.summarise([], now) == {}
 
 with tempfile.TemporaryDirectory() as d:
@@ -42,7 +42,7 @@ with tempfile.TemporaryDirectory() as d:
     for _ in range(3):
         roomui.sample_once()
     lines = roomui.read_samples()
-    assert len(lines) == 3 and all(l.split()[1] in ("agent-team", "podium") for l in lines), lines
+    assert len(lines) == 3 and all(l.split()[1] in ("build-room", "podium") for l in lines), lines
     assert lines[-1].split()[1:] == ["podium", "7", "57.0", "0.0"], lines
 
 # rooms: listed from tickets.json or events.jsonl, summarised, and closed by archiving

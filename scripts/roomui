@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start, stop and watch the two local UIs behind sf:orchestrate: agent-team (Build Room) and Podium.
+"""Start, stop and watch the two local UIs behind sf:orchestrate: the Build Room (sf's own roomserver/) and Podium.
 
   roomui start    start whichever is down, plus the memory sampler; never restart one that is up
   roomui stop     stop both servers and the sampler, then offer to close each room (y/N, default no)
@@ -9,8 +9,8 @@
                   before closing it (changes nothing; the /sf:room command archives and prunes)
   roomui status   running or not, pid, RSS, CPU, uptime, URL, and the last 24 hours of samples
 
-Environment: ROOMUI_AGENT_TEAM_DIR (default ~/FyxerGh/agent-team), ROOMUI_PODIUM_DIR (default
-~/FyxerGh/podium), ROOMUI_STATE_DIR (pid files and logs, default ~/FyxerGh/build-room).
+Environment: BUILD_ROOM_PORT (default 7790), ROOMUI_PODIUM_DIR (default ~/FyxerGh/podium), ROOMUI_STATE_DIR
+(pid files and logs, default ~/FyxerGh/build-room).
 
 A process is only ever signalled after its command line says it is one of the two servers (or the
 sampler). Podium is stopped through `podiumctl stop`. Nothing here reads Podium's token or config.env,
@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -28,14 +29,15 @@ from datetime import datetime, timedelta, timezone
 
 HOME = os.path.expanduser("~")
 STATE = os.environ.get("ROOMUI_STATE_DIR") or os.path.join(HOME, "FyxerGh", "build-room")
-AGENT_TEAM = os.path.realpath(os.environ.get("ROOMUI_AGENT_TEAM_DIR") or os.path.join(HOME, "FyxerGh", "agent-team"))
+ROOMSERVER = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "roomserver", "server.mjs")
+ROOM_PORT = int(os.environ.get("BUILD_ROOM_PORT") or 7790)
 PODIUM = os.path.realpath(os.environ.get("ROOMUI_PODIUM_DIR") or os.path.join(HOME, "FyxerGh", "podium"))
 SERVERS = {
-    "agent-team": {"port": 7777, "url": "http://127.0.0.1:7777/room", "env": "ROOMUI_AGENT_TEAM_DIR"},
+    "build-room": {"port": ROOM_PORT, "url": f"http://127.0.0.1:{ROOM_PORT}/room"},
     "podium": {"port": 4317, "url": "http://127.0.0.1:4317/#/", "env": "ROOMUI_PODIUM_DIR"},
 }
-PIDFILE = {"agent-team": "agent-team.pid", "sampler": "roomui-sampler.pid"}
-LOG = {"agent-team": "agent-team.log", "samples": "roomui-samples.log"}
+PIDFILE = {"build-room": "build-room.pid", "sampler": "roomui-sampler.pid"}
+LOG = {"build-room": "build-room.log", "samples": "roomui-samples.log"}
 SAMPLE_EVERY = 60
 MAX_SAMPLES = 20160  # a week of two servers a minute; the oldest lines go first
 TS = "%Y-%m-%dT%H:%M:%SZ"
@@ -109,8 +111,8 @@ def cwd(pid):
 
 def is_server(name, pid):
     cmd = command(pid)
-    if name == "agent-team":
-        return "server.mjs" in cmd.split() and cwd(pid) == AGENT_TEAM
+    if name == "build-room":
+        return ROOMSERVER in cmd.split()
     return os.path.join(PODIUM, "server", "dist", "index.js") in cmd
 
 
@@ -142,11 +144,11 @@ def sampler_pid():
 
 
 def missing(name):
-    d = AGENT_TEAM if name == "agent-team" else PODIUM
-    marker = "server.mjs" if name == "agent-team" else os.path.join("bin", "podiumctl")
-    if os.path.exists(os.path.join(d, marker)):
+    if name == "build-room":
+        return None if shutil.which("node") else "build-room: needs Node 20.11 or newer on PATH (https://nodejs.org)"
+    if os.path.exists(os.path.join(PODIUM, "bin", "podiumctl")):
         return None
-    return f"{name}: not found at {d}; set {SERVERS[name]['env']} to its repo"
+    return f"{name}: not found at {PODIUM}; set ROOMUI_PODIUM_DIR to its repo"
 
 
 def stop_pid(pid, what):
@@ -158,24 +160,22 @@ def stop_pid(pid, what):
     return f"sent SIGTERM to {what} (pid {pid}) but it is still running"
 
 
-def start_agent_team():
-    err = missing("agent-team")
+def start_build_room():
+    err = missing("build-room")
     if err:
         return err
     os.makedirs(STATE, exist_ok=True)
-    with open(path("log", "agent-team"), "ab") as log:
-        # Plain `node server.mjs`, not `npm start`: on agent-team's main that also starts its fleet manager and
-        # iTerm presenter (--fleet --iterm) and takes a machine-wide lock, none of which the Build Room needs.
-        subprocess.Popen(["node", "server.mjs"], cwd=AGENT_TEAM, stdin=subprocess.DEVNULL, stdout=log,
+    with open(path("log", "build-room"), "ab") as log:
+        subprocess.Popen(["node", ROOMSERVER], cwd=os.path.dirname(ROOMSERVER), stdin=subprocess.DEVNULL, stdout=log,
                          stderr=subprocess.STDOUT, start_new_session=True)
     for _ in range(100):
-        state, pid = find("agent-team")
+        state, pid = find("build-room")
         if state == "up":
-            with open(path("pid", "agent-team"), "w") as f:
+            with open(path("pid", "build-room"), "w") as f:
                 f.write(f"{pid}\n")
-            return f"agent-team: started (pid {pid}); log {path('log', 'agent-team')}"
+            return f"build-room: started (pid {pid}); log {path('log', 'build-room')}"
         time.sleep(0.2)
-    return f"agent-team: did not come up in 20s; see {path('log', 'agent-team')}"
+    return f"build-room: did not come up in 20s; see {path('log', 'build-room')}"
 
 
 def podiumctl(*args):
@@ -213,7 +213,7 @@ def start_sampler():
 
 def cmd_start():
     out = []
-    for name, starter in (("agent-team", start_agent_team), ("podium", start_podium)):
+    for name, starter in (("build-room", start_build_room), ("podium", start_podium)):
         state, pid = find(name)
         if state == "up":
             out.append(f"{name}: already running (pid {pid})")
@@ -223,7 +223,7 @@ def cmd_start():
         else:
             out.append(starter())
     out.append(start_sampler())
-    out += ["", f"Build Room  {SERVERS['agent-team']['url']}", f"Podium      {SERVERS['podium']['url']}"]
+    out += ["", f"Build Room  {SERVERS['build-room']['url']}", f"Podium      {SERVERS['podium']['url']}"]
     print("\n".join(out))
     return 0
 
@@ -232,14 +232,14 @@ def cmd_stop(ask=True):
     out = []
     pid = sampler_pid()
     out.append(stop_pid(pid, "sampler") if pid else "sampler: not running")
-    state, pid = find("agent-team")
+    state, pid = find("build-room")
     if state == "up":
-        out.append(stop_pid(pid, "agent-team"))
+        out.append(stop_pid(pid, "build-room"))
     elif state == "busy":
-        out.append(f"agent-team: port 7777 is held by another process (pid {', '.join(map(str, pid))}); left alone")
+        out.append(f"build-room: port {ROOM_PORT} is held by another process (pid {', '.join(map(str, pid))}); left alone")
     else:
-        out.append("agent-team: not running")
-    for name in ("agent-team", "sampler"):
+        out.append("build-room: not running")
+    for name in ("build-room", "sampler"):
         if not (stats(read_pid(name) or 0)):
             try:
                 os.remove(path("pid", name))

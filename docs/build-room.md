@@ -82,7 +82,7 @@ Joey can undo an answer from the Room UI. `room reopen` writes the question agai
 
 ## What the human sees
 
-- **The Room UI** (agent-team, `http://127.0.0.1:7777/room`) shows the board as a pipeline strip with one stage open (each ticket a card joined to its PR, in merge order), an inbox bar at the foot that opens the questions waiting in this room, and is where answers are sent from.
+- **The Room UI** (`http://127.0.0.1:7790/room`, served by `roomserver/` in this plugin and started by `/sf:room start`) shows the board as a pipeline strip with one stage open (each ticket a card joined to its PR, in merge order), an inbox bar at the foot that opens the questions waiting in this room, and is where answers are sent from.
 - **The build-room-view mod** shows a read-only Inbox, Board and merge-train pane inside the orchestrator's session.
 - **Podium** (`http://127.0.0.1:4317`) shows every session's live state. The orchestrator reads it with `room podium` to spot stuck workers.
 
@@ -96,7 +96,7 @@ Nothing polls GitHub. Three things run it:
 
 - **The orchestrator**, on every wake, before it renders the board.
 - **The build-room-view mod**, on Claude events in a session that belongs to a room, at most once a minute and never two at once.
-- **The Room UI's Refresh button**, for when the mod can't reach `gh`. The agent-team server runs `room prs` for that room with a fixed argv and the page picks up the new `prs.json` by its file watch.
+- **The Room UI's Refresh button**, for when the mod can't reach `gh`. The room server runs `room prs` for that room with a fixed argv and the page picks up the new `prs.json` by its file watch.
 
 The Room UI shows each unmerged PR on its ticket's card, in merge order, with merged ones behind a "Merged" history; the mod's pane shows a compact text merge train.
 
