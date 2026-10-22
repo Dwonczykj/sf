@@ -53,7 +53,7 @@ const store = {
   sessions: [],
   skills: [],
   skillsFor: null,
-  run: storage.get("build-room-run"),
+  run: new URLSearchParams(location.search).get("room") || storage.get("build-room-run"),
   picks: new Map(), // "run:q" -> Set of labels, for multi-select questions
   sending: new Set(),
   errors: new Map(),
@@ -765,14 +765,20 @@ const feedOf = (run) => {
   return [...events, ...mine].sort((a, b) => String(b.ts).localeCompare(String(a.ts))).slice(0, 120).map((x) => x.html).join("");
 };
 
+const elsewhereLine = (run) => {
+  const rooms = [...store.runs.values()].filter((r) => r !== run).map((r) => ({ id: r.id, n: openQuestions(r).length })).filter((r) => r.n);
+  return rooms.length
+    ? `<span class="muted small">Also waiting in other rooms: ${rooms.map((r) => `<button type="button" class="link-btn" data-act="switch-room" data-run="${h(r.id)}">${h(r.id)} (${r.n})</button>`).join(", ")}</span>`
+    : "";
+};
 const inboxBar = (run, total) => {
   const qs = openQuestions(run);
   const next = qs[0];
   const from = next && (next.from?.name ?? ticketsOf(run).find((t) => t.id === next.ticket)?.session ?? next.ticket);
   return `<span class="bar-badge">Your turn</span>
-    <div class="bar-text"><b>${qs.length ? `${plural(qs.length, "question")} ${qs.length === 1 ? "waits" : "wait"} on you in this room` : `${total} to start or merge in this room`}</b>
-      <span class="muted small ellipsis">${next ? `Next: ${h(next.ask.question)} · from ${h(from)}` : "Open to see them"}</span></div>
-    <button type="button" class="btn dark" id="answer-now" data-act="sheet-toggle" aria-expanded="${store.sheet}" aria-controls="sheet">${store.sheet ? "Close" : qs.length ? "Answer now" : "Open"}</button>`;
+    <div class="bar-text"><b>${qs.length ? `${plural(qs.length, "question")} ${qs.length === 1 ? "waits" : "wait"} on you in ${h(run.id)}` : total ? `${total} to start or merge in ${h(run.id)}` : `Nothing waits on you in ${h(run.id)}`}</b>
+      <span class="muted small ellipsis">${next ? `Next: ${h(next.ask.question)} · from ${h(from)}` : total ? "Open to see them" : ""}</span>${elsewhereLine(run)}</div>
+    <button type="button" class="btn dark" id="answer-now"${total ? "" : " hidden"} data-act="sheet-toggle" aria-expanded="${store.sheet}" aria-controls="sheet">${store.sheet ? "Close" : qs.length ? "Answer now" : "Open"}</button>`;
 };
 
 const renderSide = (run, route) => {
@@ -789,17 +795,15 @@ const renderSide = (run, route) => {
     ...here.flatMap((r) => ticketsOf(r).filter((t) => t.state === "DONE" && t.pr).map((t) => mergeCard(r, t, false))),
   ];
   const elsewhere = [...store.runs.values()].filter((r) => r !== run).map((r) => ({ id: r.id, n: openQuestions(r).length })).filter((r) => r.n);
-  const others = elsewhere.length
-    ? `<div class="muted small" style="margin-top:6px">Also waiting in other rooms: ${elsewhere.map((r) => `<button type="button" class="link-btn" data-act="switch-room" data-run="${h(r.id)}">${h(r.id)} (${r.n})</button>`).join(", ")}</div>`
-    : "";
+  const others = elsewhere.length ? `<div style="margin-top:6px">${elsewhereLine(run)}</div>` : "";
   document.getElementById("cards").innerHTML = (cards.join("") || `<div class="muted" style="font-size:12px">Nothing waiting on you in this room.</div>`) + others;
   document.getElementById("feed").innerHTML = room && run ? feedOf(run) : "";
   // On the Board the side panel is a bottom bar; its cards open as a sheet.
   const board = route.view === "board";
   if (!cards.length) store.sheet = false;
-  document.body.dataset.inbox = cards.length ? "1" : "0";
+  document.body.dataset.inbox = cards.length || (board && elsewhere.length) ? "1" : "0"; // the bar also points to other rooms
   document.body.dataset.sheet = board && store.sheet ? "1" : "0";
-  document.getElementById("bar").innerHTML = board && cards.length ? inboxBar(run, cards.length) : "";
+  document.getElementById("bar").innerHTML = board && run && (cards.length || elsewhere.length) ? inboxBar(run, cards.length) : "";
   const sheet = document.getElementById("sheet");
   if (board) sheet.setAttribute("role", "dialog"); else sheet.removeAttribute("role");
   const undo = undoable(run ?? { signoffs: [], events: [] });
@@ -912,6 +916,9 @@ const loadSkills = () => {
 
 const selectRun = (id) => {
   store.run = id;
+  const url = new URL(location.href);
+  url.searchParams.set("room", id); // a reload or a copied link stays in this room
+  history.replaceState(null, "", url);
   store.sheet = false;
   storage.set("build-room-run", id);
   loadSkills();
@@ -1014,6 +1021,7 @@ document.addEventListener("click", (e) => {
   else if (act === "sheet-toggle") { store.sheet = !store.sheet; focusSoon(store.sheet ? "sheet" : "answer-now"); }
   else if (act === "sheet-close") { store.sheet = false; focusSoon("answer-now"); }
   else if (act === "prs-refresh") refreshPrs(el.dataset.run);
+  else if (act === "switch-room" && el.closest("#bar")) return selectRun(el.dataset.run); // #cards has its own handler
   else if (act === "prs-merged") { if (store.showMerged.has(el.dataset.run)) store.showMerged.delete(el.dataset.run); else store.showMerged.add(el.dataset.run); }
   else if (act === "prs-history") store.history = "";
   else if (act === "prs-filter") store.history = el.dataset.feature;

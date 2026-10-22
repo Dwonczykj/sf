@@ -335,7 +335,12 @@ def reopen(a):
 CLOSED = re.compile(r"re (\d+): (.*)", re.S)
 
 
-def card_text(q):
+def room_url(d):
+    """The Room UI page for this room, so a link from a session opens this room and not the last one viewed."""
+    return f"http://127.0.0.1:{os.environ.get('BUILD_ROOM_PORT') or 7790}/room?room={urllib.parse.quote(os.path.basename(os.path.normpath(d)))}"
+
+
+def card_text(q, url=None):
     """One question card as plain text for a Claude session: the same card the Room UI shows, lettered."""
     ask = q["ask"]
     who = (q.get("from") or {}).get("name") or q.get("role", "")
@@ -345,7 +350,8 @@ def card_text(q):
     for i, o in enumerate(ask["options"]):
         lines.append(f"  {chr(65 + i)}) {o['label']}{': ' + o['description'] if o.get('description') else ''}")
     lines.append("  Other: reply in your own words" + (" (pick one or more letters)" if ask.get("multiSelect") else ""))
-    lines.append(f'Reply here with "Q{q["id"]}: A" or your own words, or answer it in the Room UI.')
+    lines.append(f'Reply here with "Q{q["id"]}: A" or your own words, or answer it in the Room UI'
+                 + (f" ({url})." if url else "."))
     return "\n".join(lines)
 
 
@@ -370,7 +376,7 @@ def inbox(a):
             out.append(f"Q{qid} {where}: {text}")
     for qid, q in cards.items():
         if qid > since and qid not in closed:
-            out += ["", card_text(q)]
+            out += ["", card_text(q, room_url(a.dir))]
     print("\n".join(out).strip())
     print(f"cursor {max([since, *(e.get('id', 0) for e in events)])}")
     return 0
@@ -874,9 +880,21 @@ def is_bot(login):
     return login.endswith("[bot]") or login in BOTS
 
 
+def latest_checks(rollup):
+    """One entry per check: a check re-run (a new push, an edited PR body) keeps its earlier runs in the rollup, and a
+    superseded run is often CANCELLED or FAILURE. Only the newest run of each name says where the PR stands."""
+    newest = {}
+    for c in rollup or []:
+        key = (c.get("workflowName") or "", c.get("name") or c.get("context") or "?")
+        when = c.get("completedAt") or c.get("startedAt") or ""
+        if key not in newest or when >= (newest[key].get("completedAt") or newest[key].get("startedAt") or ""):
+            newest[key] = c
+    return list(newest.values())
+
+
 def ci_summary(rollup):
     out = {"passed": 0, "failed": 0, "running": 0, "failing": []}
-    for c in rollup or []:
+    for c in latest_checks(rollup):
         result = c.get("conclusion") or c.get("state") or ""  # a check run's conclusion, a status's state
         if result in PASSED:
             out["passed"] += 1

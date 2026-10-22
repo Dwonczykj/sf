@@ -772,6 +772,18 @@ with tempfile.TemporaryDirectory() as d:
     again = run(d, "--since", later.strip().splitlines()[-1].split()[1], cmd="inbox").stdout.strip()
     assert again.splitlines() == [again.splitlines()[-1]] and again.startswith("cursor "), again  # nothing new
 
+import importlib.machinery
+import importlib.util
+# ci_summary: a re-run check counts once, by its newest run, so a cancelled earlier run is not a failure.
+_c = importlib.machinery.SourceFileLoader("room_c", ROOM)
+_cm = importlib.util.module_from_spec(importlib.util.spec_from_loader("room_c", _c))
+_c.exec_module(_cm)
+_roll = [{"name": "Description follows template", "conclusion": "CANCELLED", "completedAt": "2026-10-22T19:27:41Z"},
+         {"name": "Description follows template", "conclusion": "SUCCESS", "completedAt": "2026-10-22T19:27:47Z"},
+         {"name": "lint", "conclusion": "FAILURE", "completedAt": "2026-10-22T19:20:00Z"},
+         {"context": "deploy/preview", "state": "PENDING", "startedAt": "2026-10-22T19:30:00Z"}]
+assert _cm.ci_summary(_roll) == {"passed": 1, "failed": 1, "running": 1, "failing": ["lint"]}, _cm.ci_summary(_roll)
+
 # qodo_counts: only unresolved Medium and above need fixing; a struck-through issue is done.
 import importlib.machinery
 import importlib.util
