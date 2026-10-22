@@ -110,7 +110,7 @@
       /* the inbox: a bar at the foot of the board, its cards in a sheet over the page */
       #bar, #scrim, #sheet-close { display: none; }
       #sheet { display: contents; }
-      body[data-view="board"] #side { position: fixed; z-index: 6; top: auto; left: 20px; right: 20px; bottom: 16px; max-width: 1440px; margin: 0 auto; padding: 0; max-height: none; flex: none; display: block; background: none; border: 0; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+      body[data-view="board"] #side { position: fixed; z-index: 6; top: auto; left: 20px; right: 20px; bottom: 16px; max-width: 1440px; margin: 0 auto; padding: 0; max-height: none; min-height: 0; flex: none; display: block; background: none; border: 0; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
       body[data-view="board"][data-inbox="0"] #side { display: none; }
       body[data-view="board"][data-inbox="1"] .bg { padding-bottom: 130px; }
       body[data-view="board"] #bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 14px 20px; border-radius: 18px; background: rgba(255, 255, 255, 0.9); border: 1px solid rgba(255, 255, 255, 0.9); box-shadow: 0 10px 30px rgba(15, 23, 42, 0.1); }
@@ -125,6 +125,7 @@
       body[data-view="board"][data-sheet="1"] #sheet { display: flex; flex-direction: column; gap: 10px; position: absolute; left: 0; right: 0; bottom: calc(100% + 10px); max-height: min(72vh, 680px); padding: 16px; border-radius: 18px; background: rgba(255, 255, 255, 0.97); border: 1px solid rgba(255, 255, 255, 0.9); box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28); }
       body[data-view="board"][data-sheet="1"] #scrim { display: block; position: fixed; inset: 0; z-index: 5; background: rgba(11, 18, 32, 0.32); }
       body[data-view="board"][data-sheet="1"] #sheet-close { display: flex; }
+      body[data-view="board"][data-sheet="1"] #side-scroll { overflow-y: auto; min-height: 0; } /* the sheet has a max height, so a long card scrolls inside it */
       #sheet:focus { outline: none; }
 
       /* cards in the inbox and chat */
