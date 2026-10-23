@@ -61,6 +61,8 @@ const store = {
   sel: null, // the selected card, "run:question"; the first open card when null or no longer open
   chatOpen: false,
   roomMenu: false, // the header's room menu is open
+  qodoOpen: new Set(), // "run|pr key" whose Qodo findings are expanded
+  addressed: new Set(), // "run|pr key" already sent to the orchestrator with Address all
   menu: { hi: 0, closed: false },
   history: null, // the feature the merge-history modal shows ("" for all), or null when it is closed
   checking: new Set(), // runs whose Refresh is running
@@ -391,13 +393,36 @@ const stageSection = (run, { c, items }) => {
 // The PRs tab: open and draft PRs in merge order, then tickets with no PR yet, then (toggled) merged PRs, newest first.
 const BOT_NAME = { "chatgpt-codex-connector": "Codex", cursor: "Cursor", "qodo-code-review": "Qodo", coderabbitai: "CodeRabbit", copilot: "Copilot" };
 const prNum = (key) => `#${String(key).split("#").at(-1)}`;
-const botLine = (e) => {
+const LEVELS = [["high", "High"], ["medium", "Medium"], ["low", "Low"]];
+// Qodo's line opens to the findings still open (the resolved ones are left out), with a link to its review and an
+// Address all button that asks the orchestrator to have the ticket's worker fix or refute every one.
+const qodoLine = (q, e, run, t) => {
+  const counts = LEVELS.map(([k, name]) => q[k] && `${q[k]} ${name.toLowerCase()}`).filter(Boolean).join(", ");
+  const edited = q.editedAt ? ` · edited ${ago(q.editedAt)}` : "";
+  const findings = q.findings ?? [];
+  const tone = q.needs ? "var(--red)" : "var(--green)";
+  if (!findings.length) {
+    return `<a href="${h(webUrl(q.url))}" target="_blank" rel="noopener" style="color:${tone}">Qodo: clear${q.low ? `, ${q.low} low` : ""}</a><span class="muted">${h(edited)}</span>`;
+  }
+  const key = `${run.id}|${e.key}`;
+  const groups = LEVELS.map(([k, name]) => {
+    const list = findings.filter((f) => f.level === k);
+    return list.length ? `<div class="qodo-level">${name}</div><ol>${list.map((f) => `<li>${h(f.title)}</li>`).join("")}</ol>` : "";
+  }).join("");
+  const sent = store.addressed.has(key);
+  return `<details class="qodo" data-key="${h(key)}"${store.qodoOpen.has(key) ? " open" : ""}>
+    <summary><b style="color:${tone}">Qodo: ${q.needs ? `${q.needs} to fix` : "nothing to fix"}</b> <span>(${h(counts)})</span><span class="muted">${h(edited)}</span></summary>
+    <div class="qodo-body">${groups}
+      ${q.trimmed ? `<div class="muted small">Qodo trimmed ${q.trimmed} lower-severity findings from its comment, so they are only on GitHub.</div>` : ""}
+      <div class="qodo-actions"><a href="${h(webUrl(q.url))}" target="_blank" rel="noopener">Open Qodo's review</a>
+        <button type="button" class="btn" data-act="address-all" data-run="${h(run.id)}" data-key="${h(key)}" data-ticket="${h(t?.id ?? "")}"${sent ? " disabled" : ""}>${sent ? "Sent to the orchestrator" : "Address all"}</button></div>
+      ${store.errors.get(`addr:${key}`) ? `<div class="err">${h(store.errors.get(`addr:${key}`))}</div>` : ""}
+    </div></details>`;
+};
+const botLine = (e, run, t) => {
   const q = e.qodo;
   const parts = [];
-  if (q) {
-    const label = q.needs ? `Qodo: ${q.needs} to fix (${[q.high && `${q.high} high`, q.medium && `${q.medium} medium`].filter(Boolean).join(", ")})` : `Qodo: clear${q.low ? `, ${q.low} low` : ""}`;
-    parts.push(`<a href="${h(webUrl(q.url))}" target="_blank" rel="noopener" style="color:${q.needs ? "var(--red)" : "var(--green)"}" title="${h((q.titles ?? []).join("; "))}">${h(label)}</a>`);
-  }
+  if (q) parts.push(qodoLine(q, e, run, t));
   for (const [bot, b] of Object.entries(e.botThreads ?? {})) {
     const name = BOT_NAME[bot] ?? bot;
     parts.push(`<span style="color:var(--red)">${h(name)}: ${b.open} open ${b.open === 1 ? "thread" : "threads"}</span> ${b.urls.map((u, i) => `<a href="${h(webUrl(u))}" target="_blank" rel="noopener">${i + 1}</a>`).join(" ")}`);
@@ -428,7 +453,7 @@ const prCard = (run, e, t) => {
     <div class="scard-title">${h(e.title)}</div>
     <div class="scard-line">${h(status.filter(Boolean).join(" · "))}</div>
     ${depends ? `<div class="scard-line">${h(depends)}</div>` : ""}
-    ${merged ? "" : `<div class="scard-line">${botLine(e)}</div>`}
+    ${merged ? "" : `<div class="scard-line">${botLine(e, run, t)}</div>`}
   </article>`;
 };
 const unbuiltCard = (run, t) => {
@@ -983,6 +1008,24 @@ const refreshPrs = async (runId) => {
     render();
   }
 };
+// Address all: one message to the orchestrator, about the PR's ticket, listing every open Qodo finding.
+const addressAll = async (runId, key, ticket) => {
+  const run = store.runs.get(runId);
+  const e = prsOf(run ?? {}).find((x) => `${runId}|${x.key}` === key);
+  if (!e?.qodo) return;
+  const q = e.qodo;
+  const counts = LEVELS.map(([k, name]) => q[k] && `${q[k]} ${name}`).filter(Boolean).join(", ");
+  const text = `Address all open Qodo findings on #${e.number} (${counts}${q.trimmed ? `, plus ${q.trimmed} lower-severity ones Qodo trimmed from its comment` : ""}): `
+    + `${(q.findings ?? []).map((f) => `[${f.level}] ${f.title}`).join("; ")}. Fix or refute each one, push, and wait for Qodo to re-review. ${q.url}`;
+  store.errors.delete(`addr:${key}`);
+  try {
+    await post({ run: runId, text, ...(ticket ? { ticket } : {}) });
+    store.addressed.add(key);
+  } catch (error) {
+    store.errors.set(`addr:${key}`, error.message);
+  }
+  render();
+};
 const focusSoon = (id) => setTimeout(() => document.getElementById(id)?.focus(), 0); // after render's microtask
 document.addEventListener("click", (e) => {
   const menu = document.getElementById("room-menu");
@@ -998,6 +1041,7 @@ document.addEventListener("click", (e) => {
   else if (act === "prs-refresh") refreshPrs(el.dataset.run);
   else if (act === "switch-room" && el.closest("#bar")) return selectRun(el.dataset.run); // #cards has its own handler
   else if (act === "pick-room") { store.roomMenu = false; return selectRun(el.dataset.run); }
+  else if (act === "address-all") return addressAll(el.dataset.run, el.dataset.key, el.dataset.ticket);
   else if (act === "prs-merged") { if (store.showMerged.has(el.dataset.run)) store.showMerged.delete(el.dataset.run); else store.showMerged.add(el.dataset.run); }
   else if (act === "prs-history") store.history = "";
   else if (act === "prs-filter") store.history = el.dataset.feature;
@@ -1016,6 +1060,7 @@ document.addEventListener("keydown", (e) => {
 document.addEventListener("toggle", (e) => {
   if (e.target.closest("#chat")) store.chatOpen = e.target.open;
   if (e.target.id === "room-menu") store.roomMenu = e.target.open;
+  if (e.target.classList?.contains("qodo")) { if (e.target.open) store.qodoOpen.add(e.target.dataset.key); else store.qodoOpen.delete(e.target.dataset.key); }
 }, true);
 
 // Drag the side panel's left edge to resize it. The width is kept per browser; double-click resets it.

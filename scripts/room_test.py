@@ -795,7 +795,11 @@ _body = ('<h3>Code Review by Qodo</h3><img src="https://img.shields.io/badge/Hig
          '<details><summary>  1.  Leaks a key <code>x</code></summary></details>'
          '<img src="https://img.shields.io/badge/Medium-634FD1?x"><details><summary>  1.  <s>Billing</s> <code>✓ Resolved</code></summary></details>'
          '<img src="https://img.shields.io/badge/Low-aaa?x"><details><summary>  1.  Naming</summary></details>')
-assert _qm.qodo_counts(_body) == {"high": 1, "medium": 0, "low": 1, "needs": 1, "titles": ["Leaks a key"]}, _qm.qodo_counts(_body)
+_q2 = _qm.qodo_counts(_body + "Comment size exceeded, 55 lower severity findings trimmed")
+assert {k: _q2[k] for k in ("high", "medium", "low", "needs", "titles", "trimmed")} == {
+    "high": 1, "medium": 0, "low": 1, "needs": 1, "titles": ["Leaks a key"], "trimmed": 55}, _q2
+assert _q2["findings"] == [{"level": "high", "title": "Leaks a key"}, {"level": "low", "title": "Naming"}], _q2
+assert _qm.qodo_counts('<img src="https://img.shields.io/badge/Medium-1"><summary> 2. Members&#x27; keys</summary>')["findings"][0]["title"] == "Members' keys"
 
 # orchestrate.md's task table and the CLI's TASKS name the same kinds and start tiers.
 import importlib.machinery

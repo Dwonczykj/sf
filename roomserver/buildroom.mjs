@@ -335,7 +335,9 @@ export const createBuildRoom = ({ dirs, port, host, sessionsDir, listLiveSession
       inFlight.add(`${run.id}:${id}`);
     } else {
       if (!text) return done(400, { error: "empty message" });
-      args = ["--ticket", "all", "--message", "--quote", text];
+      // A message can name the ticket it is about (the PRs tab's Address all); only a ticket the room has.
+      const ticket = (run.tickets?.tickets ?? []).some((t) => t.id === body.ticket) ? body.ticket : "all";
+      args = ["--ticket", ticket, "--message", "--quote", text];
     }
     execFile("python3", [cli, "signoff", "--dir", run.dir, ...args], { timeout: 15_000 }, (error, stdout, stderr) => {
       if (body.question != null) inFlight.delete(`${run.id}:${Number(body.question)}`);

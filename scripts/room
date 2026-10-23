@@ -28,6 +28,7 @@ counts as Joey's words: anyone can append to events.jsonl.
 """
 import argparse
 import fcntl
+import html
 import json
 import os
 import re
@@ -991,7 +992,7 @@ def qodo_review(repo, number):
     reviewed. `needs` is the unresolved issues at Medium and above, the ones that must be fixed before merge."""
     try:
         out = gh("api", f"repos/{repo}/issues/{number}/comments?per_page=100", "--paginate", "--jq",
-                 '.[] | select(.user.login == "qodo-code-review[bot]") | {url: .html_url, body: .body}')
+                 '.[] | select(.user.login == "qodo-code-review[bot]") | {url: .html_url, body: .body, editedAt: .updated_at}')
     except GhError:
         return None
     mine = None
@@ -1004,11 +1005,16 @@ def qodo_review(repo, number):
             mine = c
     if not mine:
         return None
-    return {"url": mine["url"], **qodo_counts(mine["body"])}
+    return {"url": mine["url"], "editedAt": mine.get("editedAt"), **qodo_counts(mine["body"])}
+
+
+QODO_TRIMMED = re.compile(r"Comment size exceeded, (\d+) lower severity findings trimmed")
 
 
 def qodo_counts(body):
-    counts, titles = {"high": 0, "medium": 0, "low": 0}, []
+    """Unresolved findings by severity. `findings` lists each one (level, title), Medium and above first as Qodo
+    orders them; `trimmed` is how many lower-severity findings Qodo cut from an oversized comment, unseen here."""
+    counts, findings = {"high": 0, "medium": 0, "low": 0}, []
     for part in body.split("img.shields.io/badge/")[1:]:
         level = part.split("-", 1)[0].lower()
         level = level if level in counts else "medium"
@@ -1016,9 +1022,11 @@ def qodo_counts(body):
             if m.group(1) or m.group(4):
                 continue  # struck through, or marked resolved
             counts[level] += 1
-            if level != "low" and len(titles) < 5:
-                titles.append(re.sub(r"<[^>]+>", "", m.group(2).split("<code>")[0]).strip()[:120])
-    return {**counts, "needs": counts["high"] + counts["medium"], "titles": titles}
+            if len(findings) < 60:
+                findings.append({"level": level, "title": html.unescape(re.sub(r"<[^>]+>", "", m.group(2).split("<code>")[0])).strip()[:160]})
+    trimmed = QODO_TRIMMED.search(body)
+    return {**counts, "needs": counts["high"] + counts["medium"], "findings": findings,
+            "titles": [f["title"] for f in findings if f["level"] != "low"][:5], "trimmed": int(trimmed[1]) if trimmed else 0}
 
 
 def is_ready(e):

@@ -217,6 +217,13 @@
       #pr-pop.on { display: block; }
       #pr-pop b { display: block; font-size: 13px; margin-bottom: 6px; overflow-wrap: anywhere; }
       .pp-line { font-weight: 600; margin-top: 3px; }
+      .qodo summary { cursor: pointer; display: inline; }
+      .qodo summary::marker { color: var(--ink-3); }
+      .qodo-body { margin: 8px 0 2px; padding: 10px 12px; border-radius: 10px; background: rgba(255, 255, 255, 0.7); border: 1px solid rgba(15, 23, 42, 0.08); }
+      .qodo-level { font-size: 11px; font-weight: 700; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 6px; }
+      .qodo-body ol { margin: 4px 0 6px; padding-left: 20px; }
+      .qodo-body li { margin: 2px 0; color: var(--ink); }
+      .qodo-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
       /* merged history */
       .pr-num { font-family: var(--mono); font-weight: 700; font-size: 12px; text-decoration: none; }
       .pr-link { font-size: 11px; font-weight: 600; }
